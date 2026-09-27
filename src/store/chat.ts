@@ -3,7 +3,9 @@
  *
  * 事件驱动：挂上 host 事件后，`message.*` / `runtime.changed` 直接更新缓存，
  * UI 只读 store（不做乐观更新，见 docs/phone-control-bridge.md §5.2）。
- * 流式走独立通道 `message.stream`（一期 `mode='full'`），以 `streaming` 单独承载。
+ * 流式走独立通道 `message.stream`，以 `streaming` 单独承载；
+ * **二期（§32）起电脑侧按本端 `hello` 的声明发增量帧**（`mode='delta'` + `offset`），
+ * 本 store 负责拼成完整正文（含重复段剔除、缺口拉全文对齐）。
  */
 import {
   BridgeError,
@@ -134,12 +136,19 @@ class ChatStore extends Store<ChatState> {
    */
   private contextEventSeq: Record<string, number> = {}
 
+  /**
+   * 正在进行的「拉全文对齐」（§32）—— 键是 `会话\u0001消息`。
+   *
+   * 为何要去重：流式期间可能**连续**收到接不上的增量（比如刚重订阅就迎来一批旧帧），
+   * 不去重就会对着同一个消息并发发好几次 `host.session.message.get`，白白占带宽。
+   */
+  private resyncingStreams = new Set<string>()
+
   constructor() {
     super(INITIAL)
   }
 
-  /** 连接就绪 / 断开时由 `connectionStore` 注入（空数组 = 未知，一律不发新请求）。 */
-  setCapabilities(capabilities: readonly string[]): void {
+  /** 连接就绪 / 断开时由 `connectionStore` 注入（空数组 = 未知，一律不发新请求）。 */  setCapabilities(capabilities: readonly string[]): void {
     this.capabilities = [...capabilities]
   }
 
@@ -584,6 +593,99 @@ class ChatStore extends Store<ChatState> {
     }
   }
 
+  /**
+   * 流式帧合并（§32）—— 整帧替换 + 增量按 `offset` 重基准。
+   *
+   * 为什么不能简单地「是增量就拼」：客户端手上有多少正文**只有它自己知道**。
+   * 三种会让它落后的情形：① 中途才订阅（前面的增量已经发过了）；
+   * ② `messages.reset` / 切回会话后本地流式态被清空；③ 断线重连（换链路，基准全丢）。
+   * `offset` 让这三种情形都能被发现：
+   *   - `offset > 本地长度` → **真缺一段** → 拉全文对齐（而不是拼出一段错位正文）；
+   *   - `offset + text.length ≤ 本地长度` → 完全重复 → 丢掉（只推进 seq）；
+   *   - 部分重叠 → 只取尾巴（`本地长度 − offset` 之后那些字符）。
+   */
+  private applyStreamFrame(e: HostEvents['host.event.message.stream']): void {
+    if (e.final) {
+      this.clearStream(e.sessionId)
+      return
+    }
+
+    // 整帧：首帧 / 正文被改写 / 老电脑一律发整段 —— 直接替换，不存在拼接风险
+    if (e.mode !== 'delta') {
+      this.setStream(e.sessionId, e.messageId, e.text, e.seq)
+      return
+    }
+
+    const prev = this.getSnapshot().streaming[e.sessionId]
+    const same = prev?.messageId === e.messageId
+    const base = same ? prev.text : ''
+    const offset = e.offset
+
+    if (offset == null) {
+      // 无偏移的增量（本版电脑侧不会发）：只能按 seq 连续性判断，接不上就拉全文
+      if (same && e.seq === prev.seq + 1) this.setStream(e.sessionId, e.messageId, base + e.text, e.seq)
+      else void this.resyncStream(e.sessionId, e.messageId)
+      return
+    }
+
+    const skip = offset - base.length
+    if (skip > 0) {
+      // 缺了一段：先拉全文对齐，**本帧丢弃**（拉回来的是更靠后的正文，包含它）
+      void this.resyncStream(e.sessionId, e.messageId)
+      return
+    }
+    const tail = skip < 0 ? e.text.slice(-skip) : e.text
+    if (!tail) {
+      // 完全重复（重连后服务端仍以旧基准推了几帧）：只推进 seq，不动正文
+      if (same) this.setState((s) => ({ ...s, streaming: { ...s.streaming, [e.sessionId]: { ...prev, seq: e.seq } } }))
+      return
+    }
+    this.setStream(e.sessionId, e.messageId, base + tail, e.seq)
+  }
+
+  /** 写入流式正文（拼接 / 替换 / 对齐三条路径的唯一落点）。 */
+  private setStream(sessionId: string, messageId: string, text: string, seq: number): void {
+    this.setState((s) => ({
+      ...s,
+      streaming: { ...s.streaming, [sessionId]: { messageId, text, seq } },
+    }))
+  }
+
+  /** 清空流式态（`final` 收口）。定稿正文由随后的 `message.added` 落地。 */
+  private clearStream(sessionId: string): void {
+    this.setState((s) => {
+      if (!s.streaming[sessionId]) return s
+      const streaming = { ...s.streaming }
+      delete streaming[sessionId]
+      return { ...s, streaming }
+    })
+  }
+
+  /**
+   * 增量接不上时**拉全文对齐** —— 协议里的 `host.session.message.get` 就是为它准备的（§3.6/§32）。
+   *
+   * 为何不「等下一个整帧」：下一个整帧要等到**定稿**（长回复可能几十秒），
+   * 而这段等待里用户看到的是一段不会再变长的半截正文 —— 比多一次 RPC 糟得多。
+   */
+  private async resyncStream(sessionId: string, messageId: string): Promise<void> {
+    const key = `${sessionId}\u0001${messageId}`
+    if (this.resyncingStreams.has(key)) return
+    this.resyncingStreams.add(key)
+    try {
+      const { message } = await getCaller().call('host.session.message.get', { sessionId, messageId })
+      const cur = this.getSnapshot().streaming[sessionId]
+      // 只在「还盯着同一条消息」且「拉回来的确实更长」时采用：
+      // 期间可能已定稿（streaming 清空）或又收到更新的整帧 —— 都不能被这次应答回退掉
+      if (cur?.messageId !== messageId) return
+      if (message.text.length <= cur.text.length) return
+      this.setStream(sessionId, messageId, message.text, cur.seq)
+    } catch {
+      /* 拉不到（旧电脑没这个方法 / 链路刚好断了）：退化为「等下一个整帧」，不弹错 */
+    } finally {
+      this.resyncingStreams.delete(key)
+    }
+  }
+
   applyEvent(topic: string, payload: unknown): void {
     switch (topic) {
       case 'host.event.session.context.changed': {
@@ -625,14 +727,7 @@ class ChatStore extends Store<ChatState> {
         break
       }
       case 'host.event.message.stream': {
-        const e = payload as HostEvents['host.event.message.stream']
-        this.setState((s) => ({
-          ...s,
-          streaming: {
-            ...s.streaming,
-            [e.sessionId]: e.final ? undefined : { messageId: e.messageId, text: e.text, seq: e.seq },
-          },
-        }))
+        this.applyStreamFrame(payload as HostEvents['host.event.message.stream'])
         break
       }
       case 'host.event.session.runtime.changed': {

@@ -109,7 +109,7 @@ function StreamingBubble({
   }, [seq, onGrow])
 
   if (streaming && hasBody(streaming)) {
-    // 流式正文：直接显示电脑侧推来的全文（一期 mode='full'，手机不自己拼）
+    // 流式正文：电脑侧按本端声明推**增量帧**，已在 store 里拼成完整正文（§32）
     return (
       <div className="msg msg--assistant">
         <div className="msg__bubble msg__bubble--stream">

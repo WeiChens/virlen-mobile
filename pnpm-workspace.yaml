@@ -7,6 +7,8 @@
 # 若安装时看到「Ignored build scripts: xxx」的提示，把那个包名加到这里并重装。
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - virlen-remote@0.1.0
 
 # ⚠️ 在 `virlen-remote` 发布到 npmjs **之前**，`pnpm test` / `pnpm dev` 这类脚本会因为 pnpm 的依赖状态自检
 # 去注册表查询 `virlen-remote@^0.1.0` 而报 ERR_PNPM_FETCH_404（真实依赖还没上架）。

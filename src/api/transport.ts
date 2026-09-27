@@ -11,6 +11,7 @@ import {
   BroadcastTransport,
   RtcTransport,
   SseSignalingClient,
+  roomFor,
   type IceServerInit,
   type Transport,
 } from 'virlen-remote'
@@ -27,7 +28,10 @@ export interface CreateTransportOptions {
   hostId: string
   /** 信令基址（存在则走 RTC 真链路）。 */
   signalUrl?: string
-  /** 信令房间号（默认由 hostId 派生）。 */
+  /**
+   * 信令房间号。**缺省由 `roomFor(hostId)` 派生**（`virlen:<电脑设备 key>`）—— 服务端就是这么判定的；
+   * 只有旧二维码里显式带着房间号时才用它（逐字优先，兼容旧码）。
+   */
   room?: string
   /**
    * ICE 服务器列表（由 `resolveIceFor()` 解析）。**缺省 = 仅本机候选**
@@ -42,7 +46,16 @@ export function createTransport(options: CreateTransportOptions): Transport {
     const identity = mobileIdentity()
     const signaling = new SseSignalingClient({
       baseUrl: options.signalUrl,
-      room: options.room ?? options.hostId,
+      /*
+       * ⚠️ 2026-09-28 真机缺陷的修复点：这里**曾经**是 `options.room ?? options.hostId`
+       * —— 把电脑 key 直接当房间名用了。M6 起二维码**不再携带 `room`**（设计决定：两端各自
+       * 用 `roomFor(host)` 派生），于是手机拿 `host-xxxx` 去 join 服务端认的 `virlen:host-xxxx`
+       * → 服务端回 404「房间不存在（电脑端未启用手机控制，或已关闭）」→ 手机把 `E_TRANSPORT`
+       * 一律显示成「电脑不在线（本机未运行 Virlen，或未启用手机控制）」——**而电脑其实在线**。
+       * 为什么 demo 没暴露：`dev/host-harness.ts` 的二维码显式带了 `room`，`options.room` 优先生效。
+       * 派生逻辑两端同一份（共享包的 `roomFor`），**不要再在这里拼房间号字符串**。
+       */
+      room: options.room ?? roomFor(options.hostId),
       role: 'guest',
       // M6：手机身份上报（电脑端列表与凭证绑定都用它）
       deviceKey: identity.deviceKey,

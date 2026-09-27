@@ -26,7 +26,7 @@ function httpsConfig(): { key: Buffer; cert: Buffer } | undefined {
 // https://vite.dev/config/
 export default defineConfig({
   // 相对基址：便于部署在任意子路径（如 https://virlen.cn/mobile/）而不改资源路径
-  base: './',
+  base: '/mobile/',
   plugins: [react()],
   resolve: {
     alias: {

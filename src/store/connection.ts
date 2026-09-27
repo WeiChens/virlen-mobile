@@ -205,6 +205,14 @@ class ConnectionStore extends Store<ConnectionState> {
           // M6：手机身份 —— 电脑端用它建「已绑定手机」列表项，并把它绑在授权凭证上
           mobileKey: identity.deviceKey,
           mobileName: identity.name,
+          /**
+           * §32：声明本端能按**增量帧**解析流式正文。
+           *
+           * 为何必须由客户端声明：老客户端（已缓存的 PWA）会把一帧增量当成全文渲染 ——
+           * 那就不是带宽问题而是**正文错位**。不声明就继续收整帧（`store-bridge` 默认 `full`）。
+           * 声明了但电脑端是旧版也别怕：旧版不认这个参数，照旧发整帧，本端同样能渲染。
+           */
+          streamMode: 'delta',
         },
         HELLO_TIMEOUT_MS,
       )
