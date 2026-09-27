@@ -1,0 +1,33 @@
+{
+  "name": "virlen-mobile",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Virlen 手机控制端（Web）—— 通过 WebRTC 连接电脑端 Virlen 桌面客户端",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "virlen-remote": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^29.1.1",
+    "qrcode": "^1.5.4",
+    "typescript": "~7.0.2",
+    "vite": "^7.0.4",
+    "vitest": "^4.1.9"
+  }
+}

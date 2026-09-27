@@ -1,0 +1,15 @@
+{
+  "name": "Virlen 手机控制",
+  "short_name": "Virlen",
+  "description": "在外网用手机查看与操作电脑端 Virlen Agent",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f10",
+  "theme_color": "#0f0f10",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

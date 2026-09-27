@@ -1,0 +1,110 @@
+.login {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  overflow-y: auto;
+}
+.login__title {
+  font-size: 22px;
+  margin: 0;
+}
+.login__sub {
+  color: #9a9aa5;
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+.login__connecting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #9a9aa5;
+  font-size: 14px;
+}
+.login__devices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.login__section-title {
+  font-size: 14px;
+  color: #9a9aa5;
+  margin: 8px 0 0;
+  font-weight: 600;
+}
+.login__empty {
+  color: #6f6f78;
+  font-size: 13px;
+}
+.device {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: #1a1a1e;
+  border-radius: 12px;
+  padding: 12px;
+}
+.device__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.device__name {
+  font-weight: 600;
+}
+.device__meta {
+  color: #8a8a94;
+  font-size: 12px;
+}
+/* 在线：一眼可辨（绿）；离线 / 未知保持中性灰（不吓人，也不假装确定） */
+.device__meta--online {
+  color: #4ec9a5;
+}
+/* 凭证过期 / 需重新扫码：给暖色警示，与在线/离线区分开 */
+.device__meta--warn {
+  color: #e0a35c;
+}
+.device__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.login__manual summary {
+  color: #9a9aa5;
+  font-size: 13px;
+  cursor: pointer;
+}
+.login__textarea {
+  width: 100%;
+  margin-top: 8px;
+  background: #1a1a1e;
+  color: #ececf1;
+  border: 1px solid #33333a;
+  border-radius: 10px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.login__tip {
+  color: #6f6f78;
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+/* 非法自定义 ICE：暖色提醒，与「需重新扫码」同一个语气（都是「你得动手改点什么」） */
+.login__tip--warn {
+  color: #e0a35c;
+}
+/* 高级设置（ICE 服务器）—— 与「手动输入配对串」同一形态，不再造一套视觉语言 */
+.login__advanced summary {
+  color: #9a9aa5;
+  font-size: 13px;
+  cursor: pointer;
+}
+.login__ice-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}

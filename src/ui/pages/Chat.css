@@ -1,0 +1,388 @@
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── 顶栏：左＝设备 + 会话摘要（点开信息面板），右＝iconbtn（新对话 / 会话列表）── */
+.chat__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid #26262c;
+}
+.chat__head-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+.chat__head-main:disabled {
+  cursor: default;
+}
+.chat__device {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chat__device-name {
+  font-size: 12px;
+  color: #8a8a94;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat__status {
+  flex: none;
+  font-size: 11px;
+  color: #6f6f78;
+  border: 1px solid #33333a;
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.chat__status.is-working {
+  color: #9fb6ff;
+  border-color: #3a4a7a;
+}
+.chat__status.is-paused {
+  color: #ffd98a;
+  border-color: #4a3a14;
+}
+.chat__title {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat__meta {
+  font-size: 11px;
+  color: #7c7c86;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat__head-actions {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #33333a;
+  border-radius: 10px;
+  background: #1a1a1e;
+  color: #cfcfd6;
+  cursor: pointer;
+}
+.iconbtn:active {
+  background: #26262e;
+}
+
+/* ── 横幅区 ── */
+.chat__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #3a3a44;
+  border-radius: 10px;
+  background: #1c1c22;
+  color: #cfcfd6;
+  font-size: 13px;
+}
+.chat__paused {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #4a3a14;
+  border-radius: 10px;
+  background: #2a2213;
+  color: #ffd98a;
+  font-size: 13px;
+}
+.chat__paused-text {
+  flex: 1;
+}
+.chat__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 贴底渲染（2026-09-27 真机反馈修复）：卡片在消息列表末尾，与上方消息留间距 */
+  margin-top: 6px;
+}
+
+/* ── 消息区 ── */
+.chat__messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.chat__messages {
+  height: 100%;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 上拉续页需要滚动链走到这里，否则会被外层容器吃掉 */
+  overscroll-behavior: contain;
+}
+/* 续页兜底按钮（短会话滚不动时也要能点） */
+.chat__load-older {
+  align-self: center;
+  border: 1px solid #33333a;
+  background: #1a1a1e;
+  color: #9a9aa4;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat__load-older:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* 回到底部：浮在消息区右下，不参与消息流布局 */
+.chat__to-bottom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid #3a3a44;
+  background: #26262e;
+  color: #ececf1;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+.chat__empty,
+.chat__loading,
+.chat__error {
+  color: #6f6f78;
+  font-size: 13px;
+  text-align: center;
+}
+.chat__error {
+  color: #ff9d9d;
+}
+.msg {
+  display: flex;
+}
+.msg--user {
+  justify-content: flex-end;
+}
+.msg--assistant {
+  justify-content: flex-start;
+}
+.msg__bubble {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+/*
+  助手消息走 Markdown：必须关掉 `pre-wrap`，否则 react-markdown 输出里的源码换行
+  会被原样显示（每两个块之间多一行空白）。
+*/
+.msg--assistant .msg__bubble {
+  white-space: normal;
+}
+.msg--user .msg__bubble {
+  background: #4f7cff;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.msg--assistant .msg__bubble {
+  background: #1f1f25;
+  color: #ececf1;
+  border-bottom-left-radius: 4px;
+}
+.msg__bubble--stream {
+  border: 1px solid #33333a;
+}
+/* 「在动」占位（还没有正文：思考中 / 工具执行中） */
+.msg__bubble--pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #9a9aa4;
+  font-size: 13px;
+  border: 1px dashed #33333a;
+}
+.dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #7ea2ff;
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes dot-bounce {
+  50% {
+    opacity: 0.25;
+    transform: translateY(-2px);
+  }
+}
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 2px;
+  background: #4f7cff;
+  animation: blink 1s steps(2, start) infinite;
+  vertical-align: text-bottom;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ── 输入区 ── */
+.chat__input {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #26262c;
+}
+.chat__textarea {
+  flex: 1;
+  resize: none;
+  background: #1a1a1e;
+  color: #ececf1;
+  border: 1px solid #33333a;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font: inherit;
+  max-height: 120px;
+}
+
+/* ── 链路横幅（M5）：掉线时不把用户踢回登录页，只告知「现在收不到」 ── */
+.chat__link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #4a3a14;
+  border-radius: 10px;
+  background: #3a2f14;
+  color: #ffd98a;
+  font-size: 13px;
+}
+.chat__link-text {
+  flex: 1;
+}
+
+/* ── 其它会话的待应答（M5）：用户没看那个会话，但不该「无人知道」 ── */
+.chat__other-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #3a3a44;
+  border-radius: 10px;
+  background: #1c1c22;
+  font-size: 13px;
+}
+.chat__other-title {
+  color: #cfcfd6;
+}
+
+/* ── 工具消息：默认折叠（正文往往是整段输出，展开会淹没对话） ── */
+.msg--tool {
+  flex-direction: column;
+}
+.msg__tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #2c2c34;
+  border-radius: 10px;
+  background: #16161b;
+  color: #9a9aa4;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg__tool-tag {
+  flex: none;
+  border: 1px solid #3a3a44;
+  border-radius: 4px;
+  padding: 0 5px;
+  color: #b9b9c3;
+}
+.msg__tool-preview {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.msg__tool-toggle {
+  flex: none;
+  color: #7ea2ff;
+}
+.msg__tool-body {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #2c2c34;
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: #111116;
+  color: #cfcfd6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.msg--system {
+  justify-content: center;
+}
+.msg--system .msg__bubble {
+  max-width: 100%;
+  background: #1a1a1e;
+  color: #8a8a94;
+  font-size: 12px;
+  border-radius: 8px;
+}

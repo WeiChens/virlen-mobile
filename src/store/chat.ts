@@ -1,0 +1,712 @@
+/**
+ * Chat store —— 会话列表 / 消息 / 运行时状态（手机侧缓存）。
+ *
+ * 事件驱动：挂上 host 事件后，`message.*` / `runtime.changed` 直接更新缓存，
+ * UI 只读 store（不做乐观更新，见 docs/phone-control-bridge.md §5.2）。
+ * 流式走独立通道 `message.stream`（一期 `mode='full'`），以 `streaming` 单独承载。
+ */
+import {
+  BridgeError,
+  type AnswerAction,
+  type ContextInfoDTO,
+  type Endpoint,
+  type HostEvents,
+  type InteractionDTO,
+  type MessageDTO,
+  type ModelProviderDTO,
+  type SessionSummaryDTO,
+  type WorkspaceOptionDTO,
+} from 'virlen-remote'
+import { Store } from '../lib/store'
+import { getCaller, onEndpointReady } from '../api/active'
+
+export interface StreamingState {
+  messageId: string
+  text: string
+  seq: number
+}
+
+export interface ChatState {
+  sessions: SessionSummaryDTO[]
+  currentSessionId: string | null
+  messages: Record<string, MessageDTO[]>
+  working: Record<string, boolean>
+  /** 会话是否处于「暂停运行」（一般由「暂存」导致）—— 手机据此显示「继续」（M5）。 */
+  paused: Record<string, boolean>
+  /** 是否正在压缩上下文（电脑侧 `RuntimeDTO.compacting`，手机据此显示进度）。 */
+  compacting: Record<string, boolean>
+  /**
+   * 正在生成的工具调用进度（电脑侧 `RuntimeDTO.toolProgress`，§27）。
+   *
+   * 引擎在**累积工具参数**期间不发任何事件（长参数可达数十秒），这个字段让「工作中」
+   * 有具体内容（「正在生成工具调用 write_file · 1.2k 字符…」），而不是让用户对着不动的
+   * 正文以为卡死。只带工具名与已累积字符数，**不含参数内容**。
+   */
+  toolProgress: Record<string, { name: string; chars: number } | undefined>
+  /** 各会话的上下文占用（快照 `host.session.context` + 增量 `context.changed`）。 */
+  context: Record<string, ContextInfoDTO | undefined>
+  streaming: Record<string, StreamingState | undefined>
+  /** 是否还有更早的消息可加载（M5 分页）。 */
+  hasMoreMessages: Record<string, boolean>
+  /** 更早消息的**不透明游标**（电脑侧原样回传，手机不解析其数值语义，见 §20.2-A）。 */
+  cursor: Record<string, number | null>
+  /** 正在加载更早消息。 */
+  loadingOlder: boolean
+  /** 待应答交互（提问 / 授权）—— 电脑侧权威，本地只是一份投影（M4）。 */
+  interactions: InteractionDTO[]
+  loadingSessions: boolean
+  loadingMessages: boolean
+  error?: string
+  /** 一次性提示（如「该请求已在电脑上处理」）—— 不弹错，只告知。 */
+  notice?: string
+  // ── §22：模型 / 工作目录 / 上下文 ──
+  /** 电脑侧已启用的模型服务与模型（白名单：不含 apiKey / baseUrl）。 */
+  models: ModelProviderDTO[]
+  loadingModels: boolean
+  /** 新建会话可选的工作目录（**候选集由电脑侧给出**，手机不能自造）。 */
+  workspaces: WorkspaceOptionDTO[]
+  loadingWorkspaces: boolean
+  /**
+   * 「新对话」的本地选择（尚未在电脑侧创建任何会话）。
+   *
+   * ⚠️ 用户拍板：点「新对话」**不**创建会话 —— 只在发送第一条消息时才创建（§22.3）。
+   * 所以这组选择必须先活在手机内存里，`draft` 就是它。
+   */
+  draft: DraftSelection
+}
+
+/** 「新对话」的三项选择（模型服务 / 模型 / 工作目录；缺省 = 由电脑侧默认值决定）。 */
+export interface DraftSelection {
+  providerConfigId?: string
+  modelId?: string
+  workspace?: string
+}
+
+const INITIAL: ChatState = {
+  sessions: [],
+  currentSessionId: null,
+  messages: {},
+  working: {},
+  paused: {},
+  compacting: {},
+  toolProgress: {},
+  context: {},
+  streaming: {},
+  hasMoreMessages: {},
+  cursor: {},
+  loadingOlder: false,
+  interactions: [],
+  loadingSessions: false,
+  loadingMessages: false,
+  models: [],
+  loadingModels: false,
+  workspaces: [],
+  loadingWorkspaces: false,
+  draft: {},
+}
+
+/** 应答被拒时的中文提示（`reason` 是协议字段，不直接展示给用户）。 */
+const ANSWER_NOTICE: Record<string, string> = {
+  'not-found': '该请求已在电脑上处理（或已失效）',
+  'already-settled': '该请求已在电脑上处理',
+  'confirm-required': '这是高风险操作，需要二次确认后才能批准',
+  'invalid-value': '选择内容不能为空',
+  'unsupported-by-host': '电脑端不支持该操作',
+}
+
+class ChatStore extends Store<ChatState> {
+  /**
+   * 电脑侧声明的能力集（hello 协商结果）。
+   *
+   * 为何要在 store 里存一份：PWA **总是最新的**，而电脑端可能还是旧版本 ——
+   * 旧电脑没有 `session.model` 等能力时，本 store 里的新方法必须**静静地什么都不做**，
+   * 而不是发一个注定 `E_DENIED` 的请求、把错误条顶到界面上（§3.5「能力驱动显隐」）。
+   */
+  private capabilities: string[] = []
+
+  /**
+   * 上下文事件序号（每会话）—— 用于丢弃**比事件更旧的快照响应**，不是 UI 状态。
+   *
+   * 为何必需（2026-09-29 实测）：`host.session.context` 的快照值是在电脑侧**处理请求那一刻**算的，
+   * 而响应可能比一个后续事件更晚到达（电脑侧同样会把那个事件推过来）—— 于是「旧快照覆盖新事件」，
+   * 手机上的占用百分比会莫名其妙地回退。与 `refreshInteractions` 里「快照不得覆盖更新的本地条目」
+   * 是同一条纪律，只是这里用计数器（不受时钟精度影响）。
+   */
+  private contextEventSeq: Record<string, number> = {}
+
+  constructor() {
+    super(INITIAL)
+  }
+
+  /** 连接就绪 / 断开时由 `connectionStore` 注入（空数组 = 未知，一律不发新请求）。 */
+  setCapabilities(capabilities: readonly string[]): void {
+    this.capabilities = [...capabilities]
+  }
+
+  private can(capability: string): boolean {
+    return this.capabilities.includes(capability)
+  }
+
+  reset(): void {
+    this.capabilities = []
+    this.contextEventSeq = {}
+    this.setState({ ...INITIAL })
+  }
+
+  /** 收起一次性提示（如「该请求已在电脑上处理」）。 */
+  clearNotice(): void {
+    this.setState((s) => ({ ...s, notice: undefined }))
+  }
+
+  async loadSessions(): Promise<void> {
+    this.setState((s) => ({ ...s, loadingSessions: true, error: undefined }))
+    try {
+      const { sessions } = await getCaller().call('host.session.list', {})
+      this.setState((s) => ({
+        ...s,
+        sessions,
+        loadingSessions: false,
+        // 「新对话」的默认选择：首次拿到列表时用**最近一个会话**的模型 / 目录（
+        // 与桌面「上次用什么，新建就默认用什么」同思路）；用户显式改过就不再覆盖
+        draft: s.draft.providerConfigId || s.draft.workspace ? s.draft : seedDraft(sessions),
+      }))
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingSessions: false, error: messageOf(err) }))
+    }
+  }
+
+  /** 进入「新对话」：**不创建任何东西**（发送第一条消息时才创建）。 */
+  newChat(): void {
+    this.setState((s) => ({ ...s, currentSessionId: null, error: undefined, notice: undefined }))
+  }
+
+  /** 切换模型：有会话 → 电脑侧（桌面 model-switcher 等价）；无会话 → 只改本地草稿。 */
+  async setModel(providerConfigId: string, modelId: string): Promise<void> {
+    const sessionId = this.getSnapshot().currentSessionId
+    if (!sessionId) {
+      this.setState((s) => ({ ...s, draft: { ...s.draft, providerConfigId, modelId } }))
+      return
+    }
+    // 旧版本电脑没有该能力：UI 本就不会显示选择器，这里是纵深防御
+    if (!this.can('session.model')) return
+    try {
+      await getCaller().call('host.session.setModel', { sessionId, providerConfigId, modelId })
+      await this.loadSessions()
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /** 选定「新对话」的工作目录（只在无会话时可用；已有会话的工作目录不可改）。 */
+  setDraftWorkspace(workspace: string): void {
+    this.setState((s) => ({ ...s, draft: { ...s.draft, workspace } }))
+  }
+
+  /** 拉取可切换的模型（白名单投影；已缓存时直接返回，`force` 可刷新）。 */
+  async loadModels(force = false): Promise<void> {
+    if (!this.can('session.model')) return
+    const snapshot = this.getSnapshot()
+    if (!force && (snapshot.models.length > 0 || snapshot.loadingModels)) return
+    this.setState((s) => ({ ...s, loadingModels: true }))
+    try {
+      const { providers } = await getCaller().call('host.model.list', {})
+      this.setState((s) => ({ ...s, models: providers, loadingModels: false }))
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingModels: false, error: messageOf(err) }))
+    }
+  }
+
+  /** 拉取「新建会话可选的工作目录」（候选集由电脑侧给出）。 */
+  async loadWorkspaces(force = false): Promise<void> {
+    if (!this.can('session.workspace')) return
+    const snapshot = this.getSnapshot()
+    if (!force && (snapshot.workspaces.length > 0 || snapshot.loadingWorkspaces)) return
+    this.setState((s) => ({ ...s, loadingWorkspaces: true }))
+    try {
+      const { workspaces } = await getCaller().call('host.workspace.list', {})
+      this.setState((s) => ({
+        ...s,
+        workspaces,
+        loadingWorkspaces: false,
+        // 草稿目录必须仍是候选集内的值：电脑侧删了会话 / 改了设置后，旧选择可能已不存在
+        draft: s.draft.workspace && !workspaces.some((w) => w.path === s.draft.workspace)
+          ? { ...s.draft, workspace: workspaces[0]?.path }
+          : s.draft,
+      }))
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingWorkspaces: false, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 拉取上下文占用快照（打开会话 / 重连后；之后由 `context.changed` 增量维护）。
+   *
+   * ⚠️ 快照会被**更晚到达的更新事件**抛弃：拉取期间若有推送到达，这份快照就是旧的
+   * （值在电脑侧处理请求那一刻算的），应用它会把新占用覆盖回去（见 `contextEventSeq`）。
+   */
+  async loadContext(sessionId: string): Promise<void> {
+    if (!this.can('session.context')) return
+    const seq = this.contextEventSeq[sessionId] ?? 0
+    try {
+      const context = await getCaller().call('host.session.context', { sessionId })
+      if ((this.contextEventSeq[sessionId] ?? 0) !== seq) return
+      this.setState((s) => ({ ...s, context: { ...s.context, [sessionId]: context } }))
+    } catch {
+      /* 快照失败不弹错：事件通道若活着，占用照样会到 */
+    }
+  }
+
+  /**
+   * 压缩上下文（**不可逆**：历史会被摘要替换）。
+   *
+   * RPC 只回投递确认 —— 进度看 `compacting`，结果看 `messages.reset`（重拉窗口）+ 摘要消息。
+   * 调用方（UI）负责先弹二次确认，且传 `confirm: true`（电脑侧独立校验，缺了会拒）。
+   *
+   * @returns 是否被电脑侧接受
+   */
+  async compressContext(sessionId: string): Promise<boolean> {
+    if (!this.can('session.compress')) return false
+    try {
+      await getCaller().call('host.session.compress', { sessionId, confirm: true })
+      return true
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+      return false
+    }
+  }
+
+  /**
+   * 进入会话：**先订阅、再拉快照**，返回时订阅已在电脑侧生效。
+   *
+   * 顺序不能反（2026-09-29 真机缺陷，§24）：「拉快照 → 订阅」之间存在一个窗口，
+   * 窗口内产生的消息事件会被电脑侧的订阅门拦掉且**永不再补** → 界面停在一份过期快照上。
+   * 反过来（订阅在前）最多是重复一条消息，而 `message.added` 按 id 幂等。
+   *
+   * 必须 `await` 到订阅应答：电脑侧是在应答之前完成登记的（`host-source.subscribe` 里
+   * `await activateSession` 之后才 `subscriptions.add`），所以「返回即可发送」是有保证的。
+   */
+  async openSession(sessionId: string): Promise<void> {
+    this.setState((s) => ({ ...s, currentSessionId: sessionId, loadingMessages: true }))
+    // 订阅先发出去（与快照**并行**，不额外多一个 RTT）；失败不弹错 —— 真有问题时下面的快照
+    // 拉取会报得更准（会话不存在 → `E_NOT_FOUND`）
+    let subscribed: Promise<unknown> = Promise.resolve()
+    try {
+      subscribed = getCaller()
+        .call('host.session.subscribe', { sessionId })
+        .catch(() => {})
+      const page = await getCaller().call('host.session.messages', { sessionId })
+      this.setState((s) => ({
+        ...s,
+        messages: { ...s.messages, [sessionId]: page.messages },
+        hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
+        cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
+        loadingMessages: false,
+      }))
+      // 上下文占用快照（之后由 `context.changed` 增量维护）
+      void this.loadContext(sessionId)
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingMessages: false, error: messageOf(err) }))
+    }
+    // 一期以「重连后快照重同步」兜底，不做增量续传；但订阅必须在返回前落地（见上方注释）
+    await subscribed
+  }
+
+  /**
+   * 电脑侧把该会话的消息**整体替换**了（压缩 / 删除消息）→ 本地窗口作废并重拉。
+   *
+   * 为何不逐条对账：压缩会把整段历史换成一条 summary，本地那份已经没有任何意义；
+   * 重拉快照天然幂等（与重连后的 `resync` 同一策略）。非当前会话只丢缓存，下次打开再拉。
+   */
+  async reloadMessages(sessionId: string): Promise<void> {
+    this.setState((s) => {
+      const messages = { ...s.messages }
+      const hasMoreMessages = { ...s.hasMoreMessages }
+      const cursor = { ...s.cursor }
+      const streaming = { ...s.streaming }
+      delete messages[sessionId]
+      delete hasMoreMessages[sessionId]
+      delete cursor[sessionId]
+      delete streaming[sessionId]
+      return { ...s, messages, hasMoreMessages, cursor, streaming }
+    })
+    if (this.getSnapshot().currentSessionId === sessionId) {
+      await this.openSession(sessionId)
+    }
+  }
+
+  async send(text: string): Promise<void> {
+    const snapshot = this.getSnapshot()
+    const trimmed = text.trim()
+    if (!trimmed) return
+    try {
+      let sessionId = snapshot.currentSessionId
+      if (!sessionId) {
+        // 无会话 = 「新对话」：**发送这一刻**才由电脑侧创建（用户拍板，§22.3）
+        sessionId = await this.createSessionFromDraft()
+      }
+      // 只回「投递确认」；过程由事件推（§3.3）
+      //
+      // ⚠️ 此处依赖该会话**已在电脑侧登记订阅**（§24）：否则这条消息与后续的流式 / 运行时
+      //    都推不回来，界面表现为「标题更新了，但会话没有任何记录」。两条路径都满足：
+      //    新会话走 `createSessionFromDraft()`（内部 `openSession()` 已 await 订阅应答），
+      //    已有会话来自 `openSession()` / `resync()`；电脑侧另有「自建会话自动订阅」兜底。
+      await getCaller().call('host.session.send', { sessionId, text: trimmed })
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 按「新对话」的本地选择在电脑侧创建会话（唯一调用点：`send`）。
+   *
+   * 工作目录 / 模型都会在电脑侧被独立校验（候选集 / 已启用服务），手机侧不预设能力。
+   *
+   * ⚠️ 创建之后必须走**与打开会话同一条路**（`openSession`：订阅 + 快照），而不是只塞一个
+   * 空数组了事 —— 2026-09-29 真机缺陷（§24）：当时只 `create` + `loadSessions`，于是新会话
+   * 既没有订阅（消息 / 流式全被电脑侧的订阅门拦掉），也没有快照，用户看到的就是
+   * 「标题更新了，但这个会话没有任何记录」。
+   */
+  private async createSessionFromDraft(): Promise<string> {
+    const draft = this.getSnapshot().draft
+    const { sessionId } = await getCaller().call('host.session.create', {
+      ...(draft.workspace ? { workspace: draft.workspace } : {}),
+      ...(draft.providerConfigId ? { providerConfigId: draft.providerConfigId } : {}),
+      ...(draft.modelId ? { modelId: draft.modelId } : {}),
+    })
+    // 订阅必须在 `send` 之前落地（`openSession` 会 await 到订阅应答）
+    await this.openSession(sessionId)
+    await this.loadSessions()
+    this.setState((s) => ({ ...s, error: undefined }))
+    return sessionId
+  }
+
+  /**
+   * 停止正在生成的回复（M5）。
+   *
+   * 交互卡片的收敛由电脑侧负责并推 `interaction.resolved`（`settleBySession`）——
+   * 本地**不抢先清**，否则会与事件竞争出「卡片闪没又回来」。
+   */
+  async cancel(sessionId: string): Promise<void> {
+    try {
+      await getCaller().call('host.session.cancel', { sessionId })
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 从暂停的 run 快照恢复执行（M5，与「暂存」配对）。
+   *
+   * 与 `send` / `cancel` 同形：RPC 只回投递确认，后续过程（消息 / 运行时）由事件推。
+   */
+  async resume(sessionId: string): Promise<void> {
+    try {
+      await getCaller().call('host.session.resume', { sessionId })
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 加载更早的消息（M5 分页）—— 上拉／滚顶触发。
+   *
+   * 合并按 id 去重：电脑侧游标带失效保护，且分页本身是幂等的，
+   * 重复页不会造成重复气泡（消息 id 是权威标识）。
+   */
+  async loadOlder(): Promise<void> {
+    const snapshot = this.getSnapshot()
+    const sessionId = snapshot.currentSessionId
+    if (!sessionId || snapshot.loadingOlder) return
+    if (!snapshot.hasMoreMessages[sessionId]) return
+    const cursor = snapshot.cursor[sessionId]
+    this.setState((s) => ({ ...s, loadingOlder: true }))
+    try {
+      const page = await getCaller().call('host.session.messages', {
+        sessionId,
+        ...(cursor != null ? { fromRowid: cursor } : {}),
+      })
+      this.setState((s) => {
+        const list = s.messages[sessionId] ?? []
+        const known = new Set(list.map((m) => m.id))
+        const older = page.messages.filter((m) => !known.has(m.id))
+        return {
+          ...s,
+          loadingOlder: false,
+          messages: { ...s.messages, [sessionId]: [...older, ...list] },
+          hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
+          cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
+        }
+      })
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingOlder: false, error: messageOf(err) }))
+    }
+  }
+
+  // ─────────────────── M4：会话写操作（不依赖电脑端已推送，主动刷新一次列表） ───────────────────
+
+  /** 新建会话并切过去（与桌面「新对话」等价）。 */
+  async createSession(title?: string): Promise<void> {
+    try {
+      const { sessionId } = await getCaller().call('host.session.create', title ? { title } : {})
+      await this.loadSessions()
+      await this.openSession(sessionId)
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /** 重命名会话（空标题会被电脑侧拒为 `E_BAD_REQUEST`）。 */
+  async renameSession(sessionId: string, title: string): Promise<boolean> {
+    try {
+      await getCaller().call('host.session.rename', { sessionId, title })
+      await this.loadSessions()
+      return true
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+      return false
+    }
+  }
+
+  /** 置顶 / 取消置顶（目标是「目标态」而不是「切换」—— 本地列表可能已过期）。 */
+  async setPinned(sessionId: string, pinned: boolean): Promise<void> {
+    try {
+      await getCaller().call('host.session.pin', { sessionId, pinned })
+      await this.loadSessions()
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 删除会话——**不可逆**，故 RPC 必带 `confirm: true`（电脑侧独立校验，见 §16.3-3）。
+   * 调用方（UI）负责先弹确认框。
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    try {
+      await getCaller().call('host.session.delete', { sessionId, confirm: true })
+      this.setState((s) => ({
+        ...s,
+        currentSessionId: s.currentSessionId === sessionId ? null : s.currentSessionId,
+      }))
+      await this.loadSessions()
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  // ─────────────────── M4：交互应答（提问 / 授权） ───────────────────
+
+  /** 应答一次交互。返回是否被电脑侧接受。 */
+  async answer(
+    interactionId: string,
+    action: AnswerAction,
+    options: { value?: unknown; confirmed?: boolean } = {},
+  ): Promise<boolean> {
+    try {
+      const result = await getCaller().call('host.interaction.answer', {
+        interactionId,
+        action,
+        value: options.value,
+        confirmed: options.confirmed,
+      })
+      if (!result.accepted) {
+        // 卡片何时收起（2026-09-27 细化，真机反馈）：
+        // - `confirm-required` / `unsupported-by-host` / `invalid-value`：**交互仍然有效**，
+        //   只是这次没走完（缺确认 / 动作对不上类型 / 内容为空）→ 保留卡片让用户继续；
+        // - `not-found` / `already-settled`：电脑侧已不再挂起 → 收起（否则是点不动的僵尸卡片）。
+        const keepCard =
+          result.reason === 'confirm-required' ||
+          result.reason === 'unsupported-by-host' ||
+          result.reason === 'invalid-value'
+        if (!keepCard) this.dropInteraction(interactionId)
+        this.setState((s) => ({
+          ...s,
+          notice: (result.reason && ANSWER_NOTICE[result.reason]) || '该请求已失效',
+        }))
+        return false
+      }
+      this.dropInteraction(interactionId)
+      this.setState((s) => ({ ...s, notice: undefined, error: undefined }))
+      return true
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+      return false
+    }
+  }
+
+  private dropInteraction(interactionId: string): void {
+    this.setState((s) => ({
+      ...s,
+      interactions: s.interactions.filter((i) => i.interactionId !== interactionId),
+    }))
+  }
+
+  /**
+   * 拉取「当前待应答交互」快照（链接就绪 / 重连后调用）。
+   *
+   * 为什么不能只靠事件：`host.event.interaction.requested` 是**一次性**的 ——
+   * 手机在交互发起之后才连上时事件已错过，界面会表现为「会话卡在 working，却没有任何可点的东西」。
+   *
+   * 合并规则（避免用快照覆盖掉刚收到的事件）：
+   * - 快照里有的 → 保留（并补齐本地缺少的）；
+   * - 快照里没有、但**本地条目是在本次拉取开始之后**创建的 → 保留（它比快照新）；
+   * - 其余本地条目 → 丢弃（服务端已不再挂起，属僵尸卡片）。
+   */
+  async refreshInteractions(): Promise<void> {
+    const startedAt = Date.now()
+    try {
+      const { interactions } = await getCaller().call('host.interaction.list', {})
+      const alive = new Set(interactions.map((i) => i.interactionId))
+      this.setState((s) => {
+        const kept = s.interactions.filter((i) => alive.has(i.interactionId) || i.createdAt >= startedAt)
+        const known = new Set(kept.map((i) => i.interactionId))
+        return { ...s, interactions: [...kept, ...interactions.filter((i) => !known.has(i.interactionId))] }
+      })
+    } catch {
+      /* 拉取失败不弹错：事件通道若活着，卡片照样会来 */
+    }
+  }
+
+  /**
+   * 多端重同步（M5）：链路就绪 / 重连后调用。
+   *
+   * 为何必需：重连会拿到一个**全新的 Endpoint** —— 旧链路的订阅（含 `host.session.subscribe`）
+   * 随旧链路一起消失，且断线期间的事件**不可能补发**。故按「重新拉快照」而非「续传」处理
+   * （与 §3.5 的重同步策略一致）。
+   *
+   * 只重拉当前会话 + 列表，不重置整个 store —— 用户断线前看到的界面不应全部消失。
+   */
+  async resync(): Promise<void> {
+    const sessionId = this.getSnapshot().currentSessionId
+    await this.loadSessions()
+    if (sessionId && this.getSnapshot().sessions.some((s) => s.id === sessionId)) {
+      await this.openSession(sessionId)
+    }
+  }
+
+  applyEvent(topic: string, payload: unknown): void {
+    switch (topic) {
+      case 'host.event.session.context.changed': {
+        const e = payload as HostEvents['host.event.session.context.changed']
+        // 计数器：让「已发出、但比本事件更旧的快照响应」在回来时自行作废（见 `loadContext`）
+        this.contextEventSeq[e.sessionId] = (this.contextEventSeq[e.sessionId] ?? 0) + 1
+        this.setState((s) => ({ ...s, context: { ...s.context, [e.sessionId]: e.context } }))
+        break
+      }
+      case 'host.event.session.messages.reset': {
+        const e = payload as HostEvents['host.event.session.messages.reset']
+        // 整体替换（压缩）/ 删除：本地窗口作废 → 重拉（fire-and-forget，UI 自行显示加载态）
+        void this.reloadMessages(e.sessionId)
+        break
+      }
+      case 'host.event.session.list.changed': {
+        const e = payload as HostEvents['host.event.session.list.changed']
+        this.setState((s) => ({ ...s, sessions: e.sessions }))
+        break
+      }
+      case 'host.event.message.added': {
+        const e = payload as HostEvents['host.event.message.added']
+        this.setState((s) => {
+          const list = s.messages[e.sessionId] ?? []
+          if (list.some((m) => m.id === e.message.id)) return s
+          const streaming = { ...s.streaming }
+          if (streaming[e.sessionId]?.messageId === e.message.id) streaming[e.sessionId] = undefined
+          return { ...s, messages: { ...s.messages, [e.sessionId]: [...list, e.message] }, streaming }
+        })
+        break
+      }
+      case 'host.event.message.updated': {
+        const e = payload as HostEvents['host.event.message.updated']
+        this.setState((s) => {
+          const list = s.messages[e.sessionId] ?? []
+          const next = list.map((m) => (m.id === e.message.id ? e.message : m))
+          return { ...s, messages: { ...s.messages, [e.sessionId]: next } }
+        })
+        break
+      }
+      case 'host.event.message.stream': {
+        const e = payload as HostEvents['host.event.message.stream']
+        this.setState((s) => ({
+          ...s,
+          streaming: {
+            ...s.streaming,
+            [e.sessionId]: e.final ? undefined : { messageId: e.messageId, text: e.text, seq: e.seq },
+          },
+        }))
+        break
+      }
+      case 'host.event.session.runtime.changed': {
+        const e = payload as HostEvents['host.event.session.runtime.changed']
+        this.setState((s) => ({
+          ...s,
+          working: { ...s.working, [e.sessionId]: e.runtime.working },
+          paused: { ...s.paused, [e.sessionId]: e.runtime.paused === true },
+          compacting: { ...s.compacting, [e.sessionId]: e.runtime.compacting === true },
+          toolProgress: { ...s.toolProgress, [e.sessionId]: e.runtime.toolProgress ?? undefined },
+        }))
+        break
+      }
+      case 'host.event.interaction.requested': {
+        const e = payload as HostEvents['host.event.interaction.requested']
+        this.setState((s) => ({
+          ...s,
+          interactions: s.interactions.some((i) => i.interactionId === e.interaction.interactionId)
+            ? s.interactions.map((i) => (i.interactionId === e.interaction.interactionId ? e.interaction : i))
+            : [...s.interactions, e.interaction],
+        }))
+        break
+      }
+      case 'host.event.interaction.resolved': {
+        const e = payload as HostEvents['host.event.interaction.resolved']
+        // 可能是电脑上先处理了（`by:'host'`）—— 一样要收起卡片，否则用户会点一个已死的按钮
+        this.setState((s) => ({
+          ...s,
+          interactions: s.interactions.filter((i) => i.interactionId !== e.interactionId),
+        }))
+        break
+      }
+      default:
+        break
+    }
+  }
+}
+
+const HOST_EVENT_TOPICS = [
+  'host.event.session.list.changed',
+  'host.event.message.added',
+  'host.event.message.updated',
+  'host.event.message.stream',
+  'host.event.session.runtime.changed',
+  'host.event.session.context.changed',
+  'host.event.session.messages.reset',
+  'host.event.interaction.requested',
+  'host.event.interaction.resolved',
+] as const
+
+export const chatStore = new ChatStore()
+
+// 连接就绪 → 挂上 host 事件订阅
+onEndpointReady((endpoint: Endpoint) => {
+  for (const topic of HOST_EVENT_TOPICS) {
+    endpoint.subscribe(topic, (payload) => chatStore.applyEvent(topic, payload))
+  }
+  // 补齐「在本次连接之前就已挂起」的交互（事件已错过，快照拉回来）
+  void chatStore.refreshInteractions()
+  // 重连后：会话列表 + 当前会话消息重新拉快照（断线期间的变更无法增量补齐）
+  void chatStore.resync()
+})
+
+function messageOf(err: unknown): string {
+  if (err instanceof BridgeError) return err.message
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** 「新对话」的默认选择：最近一个会话的模型 / 工作目录（拿不到就留空，由电脑侧默认值决定）。 */
+function seedDraft(sessions: SessionSummaryDTO[]): DraftSelection {
+  const latest = sessions[0]
+  return {
+    ...(latest?.providerConfigId ? { providerConfigId: latest.providerConfigId } : {}),
+    ...(latest?.modelId ? { modelId: latest.modelId } : {}),
+    ...(latest?.workspace ? { workspace: latest.workspace } : {}),
+  }
+}

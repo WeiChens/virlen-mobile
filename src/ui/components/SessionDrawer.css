@@ -1,0 +1,180 @@
+/* SessionDrawer —— 右侧会话抽屉（深色主题与 Chat 页一致） */
+.drawer__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 20;
+}
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(86vw, 360px);
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  background: #16161b;
+  border-left: 1px solid #2c2c34;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  animation: drawer-in 0.16s ease-out;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(12px);
+    opacity: 0.4;
+  }
+}
+.drawer__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #26262c;
+}
+.drawer__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.drawer__modes {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.drawer__mode {
+  border: 1px solid #33333a;
+  background: #1a1a1e;
+  color: #9a9aa4;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.drawer__mode.is-on {
+  border-color: #4f7cff;
+  color: #fff;
+}
+.drawer__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #9a9aa4;
+  cursor: pointer;
+}
+.drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+  overscroll-behavior: contain;
+}
+.drawer__hint {
+  color: #6f6f78;
+  font-size: 13px;
+  text-align: center;
+  padding: 12px 0;
+}
+.drawer__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #26262c;
+}
+.drawer__device {
+  font-size: 12px;
+  color: #8a8a94;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── 分组 / 会话行 ── */
+.sgroup {
+  margin-top: 8px;
+}
+.sgroup__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #8a8a94;
+}
+.sgroup__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.sgroup__count {
+  flex: none;
+  border: 1px solid #33333a;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: #7c7c86;
+}
+.srow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #d7d7de;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.srow--active {
+  border-color: #4f7cff;
+  background: #1b2440;
+  color: #fff;
+}
+.srow__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.srow__title {
+  font-size: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.srow__meta {
+  font-size: 11px;
+  color: #7c7c86;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.srow__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4f7cff;
+  animation: drawer-pulse 1.4s ease-in-out infinite;
+}
+@keyframes drawer-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.srow__pin {
+  flex: none;
+  color: #d19a66;
+  font-size: 12px;
+}
