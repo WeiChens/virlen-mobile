@@ -1,66 +1,133 @@
+/*
+ * QrScanner —— **全屏扫码**取景（2026-10-01 改）。
+ *
+ * 旧版把预览限制在一块 `min(80vw, 320px)` 的小方块里（`object-fit: cover`），
+ * 真机反馈「取景框太小、对不上焦、码稍微偏一点就扫不到」。现在改成：
+ * 视频**完整铺满视野**（`object-fit: contain`，不做数字放大），取景框只是浮在画面上的
+ * **四角视觉引导**，解码本身覆盖全帧。
+ *
+ * ⚠️ 为何是 `contain` 而不是 `cover`：相机流几乎都是**横屏**（如 16:9），而手机屏幕是**竖屏**。
+ * `cover` 会把横屏画面放大到铺满竖屏 → 缩放比由高度决定（常见机型约 **2.17×**）、
+  * 横向裁掉约 3/4 → 屏幕上只看到原始画面宽度的 ~26%。那就是用户报告的「太放大/对不上」。
+ * `contain` 等比缩小到刚好放进屏幕（横屏流在竖屏上会**上下留黑边**），换到「所见即全部视野」。
+ *
+ * 布局分三层（自下而上）：video（完整视野）→ reticle（居中引导）→ hud / controls（贴顶、贴底）。
+ * hud / controls 各带一层渐变遮罩，保证白字在任何画面上都读得清。
+ */
 .scanner {
   position: fixed;
   inset: 0;
   background: #000;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 20px;
-}
-.scanner__frame {
-  position: relative;
-  width: min(80vw, 320px);
-  aspect-ratio: 1;
-  border-radius: 16px;
   overflow: hidden;
-  background: #111;
 }
+
+/*
+  视频**按原始宽高比完整显示**（`contain`），绝不裁切 / 数字放大：
+  横屏相机流在竖屏上会上下留黑边 —— 这是为了「所见即全部视野」的有意取舍。
+  解码用的是**视频原始全帧**，与这里的显示方式无关（见 lib/scan-plan.ts）。
+*/
 .scanner__video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 .scanner__canvas {
   display: none;
 }
+
+/* ── 取景框：仅视觉引导（居中、四角括号），不遮挡画面、不拦截触摸 ──
+   尺寸由 JS 按视频实际显示框算好并以行内样式下发；下面的 `width/height` 仅为兜底 */
 .scanner__reticle {
   position: absolute;
-  inset: 15%;
-  border: 2px solid rgba(79, 124, 255, 0.9);
-  border-radius: 12px;
+  top: 50%;
+  left: 50%;
+  width: 60vw;
+  height: 60vw;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
-.scanner__hint,
-.scanner__error {
-  color: #cfcfd6;
-  font-size: 13px;
-  text-align: center;
-  max-width: 320px;
+.scanner__corner {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(79, 124, 255, 0.95);
 }
-.scanner__error {
-  color: #ff9d9d;
+.scanner__corner--tl {
+  top: 0;
+  left: 0;
+  border-right: none;
+  border-bottom: none;
+  border-top-left-radius: 10px;
 }
-.scanner__banner {
+.scanner__corner--tr {
+  top: 0;
+  right: 0;
+  border-left: none;
+  border-bottom: none;
+  border-top-right-radius: 10px;
+}
+.scanner__corner--bl {
+  bottom: 0;
+  left: 0;
+  border-right: none;
+  border-top: none;
+  border-bottom-left-radius: 10px;
+}
+.scanner__corner--br {
+  bottom: 0;
+  right: 0;
+  border-left: none;
+  border-top: none;
+  border-bottom-right-radius: 10px;
+}
+
+/* ── 顶部 HUD：提示文案（带自上而下的渐变遮罩保证可读）── */
+.scanner__hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
   align-items: center;
-  text-align: center;
+  gap: 8px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 20px 28px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+.scanner__hint {
+  margin: 0;
   max-width: 340px;
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: rgba(255, 87, 87, 0.12);
-  border: 1px solid rgba(255, 87, 87, 0.4);
-}
-.scanner__banner strong {
-  color: #ff9d9d;
+  color: #fff;
   font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
-.scanner__banner span {
-  color: #e6c9c9;
-  font-size: 13px;
-  line-height: 1.5;
+.scanner__notice {
+  margin: 0;
+  max-width: 340px;
+  color: #d3d3da;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+/* ── 底部控件区：调优工具条 + 返回（带自下而上的渐变遮罩）── */
+.scanner__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 20px calc(env(safe-area-inset-bottom, 0px) + 18px);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
 }
 
 /* 手动调优工具条（对焦 / 补光 / 变焦）——
@@ -74,10 +141,11 @@
   justify-content: center;
 }
 .scanner__tool {
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 10px;
   padding: 8px 14px;
-  background: rgba(255, 255, 255, 0.06);
+  /* 浮在实时画面上：底色比旧版更实一点，保证按钮本身看得清 */
+  background: rgba(20, 20, 26, 0.55);
   color: #ececf1;
   font-size: 13px;
   /* 手机触控：足够大的点击区域，戴手套/潮湿手指也能点中 */
@@ -85,7 +153,7 @@
 }
 .scanner__tool.is-on {
   border-color: rgba(79, 124, 255, 0.9);
-  background: rgba(79, 124, 255, 0.22);
+  background: rgba(79, 124, 255, 0.32);
 }
 .scanner__zoom {
   display: inline-flex;
@@ -93,24 +161,38 @@
   gap: 8px;
 }
 .scanner__zoom-value {
-  color: #cfcfd6;
+  color: #ececf1;
   font-size: 13px;
   min-width: 46px;
   text-align: center;
-  /* 倍率变化时数字宽度跳动会带动但两个按钮位移 */
+  /* 倍率变化时数字宽度跳动会带动两个按钮位移 */
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
-.scanner__tips {
+
+/* ── 摄像头不可用 / 权限被拒：居中浮层说明 ── */
+.scanner__banner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
+  gap: 6px;
   align-items: center;
-  gap: 8px;
-}
-.scanner__notice {
-  margin: 0;
-  max-width: 340px;
-  color: #a9a9b4;
-  font-size: 12px;
-  line-height: 1.6;
   text-align: center;
+  width: min(88vw, 340px);
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(20, 20, 26, 0.9);
+  border: 1px solid rgba(255, 87, 87, 0.45);
+}
+.scanner__banner strong {
+  color: #ff9d9d;
+  font-size: 14px;
+}
+.scanner__banner span {
+  color: #e6c9c9;
+  font-size: 13px;
+  line-height: 1.5;
 }

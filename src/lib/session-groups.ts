@@ -75,3 +75,24 @@ function groupKeyOf(
 export function baseNameOf(path: string): string {
   return path.split('/').pop() || path
 }
+
+/**
+ * 折叠态是否需要「提醒」高亮（用户要求，2026-10-01）。
+ *
+ * 分组的实质用途是「收纳」，但收起后信息全被藏起来 —— 若组里正有会话在干活、
+ * 或就是用户当前打开的会话，收起态必须还能把它「冒出来」，否则用户会以为没动静。
+ *
+ * 判定依据只有两条（都在 DTO 里、无需额外请求）：
+ * 1. 组内**任一会话 `working`** —— 电脑上正在回复；
+ * 2. 组内**含当前会话** —— 用户正盯着的那个会话。
+ *
+ * 只在**收起态**调用（展开时内容自现，高亮反而多余）。
+ */
+export function groupNeedsAttention(
+  group: SessionGroup,
+  currentSessionId: string | null,
+): boolean {
+  return group.sessions.some(
+    (s) => s.working === true || (!!currentSessionId && s.id === currentSessionId),
+  )
+}

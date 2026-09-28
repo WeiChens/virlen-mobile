@@ -3,32 +3,32 @@
  *
  * ## 为什么要手机端自己读
  *
- * 协议的方法表里**确实有** `host.event.connection.changed: { path: 'direct' | 'relay' }`，
- * 但电脑端目前**从不发它**（`virlen-app/src/bridge/link-kind.ts` 算出来的结论只喂给了桌面设置页）。
- * 而「字节有没有过 TURN」这件事在本端同样成立 —— 本端也有一条所选候选对。所以这里自己读，
- * 不依赖一个尚未落地的协议事件（等到电脑端真发它那天，可以拿它做交叉校验，但不能拿它当唯一来源）。
+ * 协议表里有 `host.event.connection.changed`（电脑端在链路类型**确定**时下发），但手机端不拿它
+ * 当唯一来源：本端同样有一条所选候选对，「字节有没有过 TURN」在本端也成立。自己读既能在事件
+ * 尚未到达时就有结论，也能在事件到达后**交叉校验电脑视角**（对不上 = 有一端的 stats 读取有问题）。
  *
- * ⚠️ **判定口径必须与电脑端 `link-kind.ts` 一致**（同一条候选对 + 同一套候选类型），
- * 否则会出现「手机说 P2P、电脑说中继」这种两台设备互相打脸的状态。
- * 那个文件在另一个仓库（virlen-app）里，本文件是它的**副本**；将来它若搬进共享包，这份删掉。
+ * ## 判定口径已收敛到共享包
  *
- * 本文件是**纯函数**（喂普通对象数组即可，不需要真实 WebRTC）—— 真实 WebRTC 跑不进 CI，
- * 所以「口径」必须能用假数据钉死。
+ * 「直连 / 中继」的判定**不在本文件里了** —— 它搬进了 `virlen-remote` 的 `classifyLinkKind`
+ * （电脑端 `virlen-app/src/bridge/link-kind.ts` 与手机端都引用同一份）。此前两端各持一份副本，
+ * 存在「手机说 P2P、电脑说中继」的漂移风险，现已消除。本文件只负责从**同一份** stats 里多读几个
+ * 展示字段（rtt / 字节 / 候选类型），判定直接调共享实现。
+ *
+ * 本文件仍是**纯函数**（喂普通对象数组即可，不需要真实 WebRTC）—— 真实 WebRTC 跑不进 CI，
+ * 所以「口径」由共享包自己的单测钉死。
  */
+import { classifyLinkKind, findCandidate, pickCandidatePair, type LinkKind } from 'virlen-remote'
 
-/** 通讯通道类型：`direct` = P2P 直连；`relay` = TURN 中继；`unknown` = 没拿到结论。 */
-export type LinkPath = 'direct' | 'relay' | 'unknown'
+/**
+ * 通讯通道类型：`direct` = P2P 直连；`relay` = TURN 中继；`unknown` = 没拿到结论。
+ *
+ * ⚠️ 就是共享包的 `LinkKind` —— 判定口径已收敛到 `virlen-remote`（见文件头）。旧的 `LinkPath`
+ * 名字保留，避免大面积改调用方。
+ */
+export type LinkPath = LinkKind
 
 /** 一条 stats 记录（`RTCStatsReport` 的 value）。 */
 type StatsEntry = Record<string, unknown>
-
-/**
- * 直连的候选类型：
- * - `host`：本机地址（同网段，最快）；
- * - `srflx`：经 STUN 得到的公网映射（打洞成功）；
- * - `prflx`：对端反射（对方的 STUN 让我们发现的地址）。
- */
-const DIRECT_TYPES = ['host', 'srflx', 'prflx']
 
 /** 候选类型 → 人话（面板里显示，用户看不懂 `srflx` 这几个字母）。 */
 const CANDIDATE_TEXT: Record<string, string> = {
@@ -94,20 +94,18 @@ export function statsEntries(report: StatsReportLike | null | undefined): StatsE
 /**
  * 体检一次。
  *
- * 顺序刻意如此（与电脑端同一份）：
- *  1. `transport.selectedCandidatePairId` —— 规范里**明确**指出「正在用哪条候选对」，最可信；
- *  2. 退而求其次：`nominated` 且 `succeeded` 的候选对（老实现不给 `transport` 记录）；
- *  3. 再退：任意 `succeeded` 的候选对；
- *  4. 都没有 → `unknown`（**不猜**：宁可不显示，也不能把中继说成直连）。
+ * 「直连 / 中继」的判定走共享包 `classifyLinkKind`（口径与电脑端同一份：所选候选对 + 候选类型）；
+ * 本函数只额外从**同一条**候选对里读 rtt / 协议 / 收发计数等展示字段。
  */
 export function summarizeRtcStats(entries: Iterable<unknown>): RtcSample {
   const list = [...entries].filter((e): e is StatsEntry => !!e && typeof e === 'object')
-  const pair = selectedPair(list) ?? succeededPair(list)
+  const pair = pickCandidatePair(list)
   const dc = list.find((s) => s['type'] === 'data-channel')
-  const local = candidateOf(list, pair?.['localCandidateId'], 'local')
-  const remote = candidateOf(list, pair?.['remoteCandidateId'], 'remote')
+  const local = findCandidate(list, pair?.['localCandidateId'], 'local')
+  const remote = findCandidate(list, pair?.['remoteCandidateId'], 'remote')
 
-  const path = classifyPath(pair, local, remote)
+  // 判定走共享包；候选对 / 候选记录也用共享包的挑选，保证判定与显示取自**同一条**候选对
+  const path = classifyLinkKind(list)
   // `currentRoundTripTime` 的单位是**秒**，面板上要 ms
   const rttSec = num(pair?.['currentRoundTripTime'])
 
@@ -125,53 +123,7 @@ export function summarizeRtcStats(entries: Iterable<unknown>): RtcSample {
   }
 }
 
-function classifyPath(
-  pair: StatsEntry | undefined,
-  local: StatsEntry | undefined,
-  remote: StatsEntry | undefined,
-): LinkPath {
-  if (!pair) return 'unknown'
-  // 还没定型的候选对（in-progress / failed）不算结论：此刻「怎么连的」还没确定
-  const state = pair['state']
-  if (typeof state === 'string' && state !== 'succeeded') return 'unknown'
-
-  const types = [local?.['candidateType'], remote?.['candidateType']].filter(
-    (t): t is string => typeof t === 'string',
-  )
-  if (types.includes('relay')) return 'relay'
-  if (types.some((t) => DIRECT_TYPES.includes(t))) return 'direct'
-  return 'unknown'
-}
-
-/** 标准路径：`transport` 记录里明确指出的那条候选对。 */
-function selectedPair(list: StatsEntry[]): StatsEntry | undefined {
-  const transport = list.find(
-    (s) => s['type'] === 'transport' && typeof s['selectedCandidatePairId'] === 'string',
-  )
-  const id = transport?.['selectedCandidatePairId']
-  if (typeof id !== 'string') return undefined
-  return list.find((s) => s['type'] === 'candidate-pair' && s['id'] === id)
-}
-
-/** 兜底路径：`nominated`（已被选中的那条）+ `succeeded`；没有 nominated 就取第一条 succeeded。 */
-function succeededPair(list: StatsEntry[]): StatsEntry | undefined {
-  const pairs = list.filter((s) => s['type'] === 'candidate-pair' && s['state'] === 'succeeded')
-  return pairs.find((p) => p['nominated'] === true) ?? pairs[0]
-}
-
-/**
- * 按 id 找候选记录。
- *
- * `localcandidate` / `remotecandidate` 是 2014 版规范里的类型名（部分实现仍在用），
- * 一起认下来 —— 认不出的代价是「明明是直连却显示未知」。
- */
-function candidateOf(list: StatsEntry[], id: unknown, side: 'local' | 'remote'): StatsEntry | undefined {
-  if (typeof id !== 'string') return undefined
-  const kinds =
-    side === 'local' ? ['local-candidate', 'localcandidate'] : ['remote-candidate', 'remotecandidate']
-  return list.find((s) => s['id'] === id && kinds.includes(s['type'] as string))
-}
-
+/** 取值：非空字符串 / 有限数字，否则 `null`（面板不显示 `undefined`）。 */
 function str(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null
 }

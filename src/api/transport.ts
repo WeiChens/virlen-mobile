@@ -43,8 +43,10 @@ export interface CreateTransportOptions {
    *
    * 为什么能这么干：共享包把 `createPeerConnection` 特意留成了注入点（它自己测试也用），
    * 于是「到底走了 P2P 还是 TURN 中继」这种**只存在于本机候选对里**的事实，
-   * 本端不必 fork 共享包就能读到（协议表里那个 `host.event.connection.changed`
-   * 目前电脑端并不发，指望不上）。
+   * 本端不必 fork 共享包就能读到。
+   *
+   * ⚠️ 协议事件 `host.event.connection.changed`（电脑端在链路类型确定时下发）虽已落地，但
+   * 本端**不拿它当唯一来源**：自己读既能在事件到达前就有结论，也能在到达后交叉校验电脑视角。
    *
    * 不传 = 用共享包的默认工厂，连接行为完全一样（没有任何分支依赖它）。
    */

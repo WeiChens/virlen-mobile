@@ -134,6 +134,23 @@ const LINK_TIMEOUT_MS = 15_000
  * 用尽后回登录页（`giveUpReconnecting`）—— 用户在那儿可以重连或重新扫码。
  */
 const RECONNECT_DELAYS = [2000, 5000, 10_000]
+
+/**
+ * 「硬拒绝」—— 再重连也不会变好，必须回登录页并让用户重新扫码 / 升级。
+ *
+ * 与之相对的是「软失败」（超时 / 电脑离线 / 链路错）：那些继续退避重连是对的，
+ * 把用户踢回登录页反而是打扰。
+ *
+ * ⚠️ 之前重连失败**一律**只置 `link:'closed'` 而保留 `status:'online'` —— 遇上硬拒绝时就表现为
+ * 「手机显示在线，实际所有 `host.*` 都被拒」（见真机：移除后手机假在线）。
+ */
+const HARD_DENIALS: ReadonlySet<ConnectErrorReason> = new Set([
+  'revoked',
+  'expired',
+  'ticket-expired',
+  'replaced',
+  'denied',
+])
 /**
  * 链路「不再 open」后等多久才动手重连（ms）。
  *
@@ -197,6 +214,15 @@ class ConnectionStore extends Store<ConnectionState> {
   private reconnectAttempt = 0
   /** 重连所需的最小信息（**不存 transport**：重建链路必须新建，旧的对端已不可用）。 */
   private lastOptions: ConnectOptions | null = null
+  /** 本次 `connect()` 是否进行中（避免「链路 open」与「connect 自己握手」重复发 `hello`）。 */
+  private connecting = false
+  /**
+   * 当前链路的授权是否仍有效。
+   *
+   * 授权是**每条链路**一份：链路一旦离开 `open`（哪怕只是 `connecting`），旧授权即作废，
+   * 必须在回到 `open` 时重新 `hello`（见 `onLinkState` / `reverify`）。
+   */
+  private handshook = false
 
   /**
    * 尝试连接。**返回是否成功**（同时把结果写入状态，供 UI 渲染三种态）。
@@ -208,6 +234,7 @@ class ConnectionStore extends Store<ConnectionState> {
     this.closeActive()
     // 被顶号的标记只对「上一次连接」有意义：主动重连时清零，否则会把新链路当成旧链路处理
     this.replaced = false
+    this.connecting = true
     if (isReconnect) {
       this.setState((s) => ({ ...s, link: 'connecting' }))
     } else {
@@ -255,31 +282,13 @@ class ConnectionStore extends Store<ConnectionState> {
       // 2) 等链路 open（RTC 需等 DataChannel 真正可用，否则 hello 会因 E_TRANSPORT 直接失败）
       await withTimeout(transport.whenReady ? transport.whenReady() : Promise.resolve(), LINK_TIMEOUT_MS)
 
+      // `setActive` 要用它（给 `api/active` 的全局 caller）；握手本身走 `handshake()`
       const caller = createCaller<HostApi>(endpoint)
       // 现场配对：电脑端要等用户点确认，握手给足 60 秒（见 PAIRING_HELLO_TIMEOUT_MS）
       const helloTimeout = options.pairing ? PAIRING_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS
-      const identity = mobileIdentity()
-      const hello: HelloResult = await caller.call(
-        'host.hello',
-        {
-          protocolVersion: 1,
-          client: { platform: detectPlatform(), appVersion: '0.1.0' },
-          capabilities: CLIENT_CAPABILITIES,
-          token: options.token,
-          // M6：手机身份 —— 电脑端用它建「已绑定手机」列表项，并把它绑在授权凭证上
-          mobileKey: identity.deviceKey,
-          mobileName: identity.name,
-          /**
-           * §32：声明本端能按**增量帧**解析流式正文。
-           *
-           * 为何必须由客户端声明：老客户端（已缓存的 PWA）会把一帧增量当成全文渲染 ——
-           * 那就不是带宽问题而是**正文错位**。不声明就继续收整帧（`store-bridge` 默认 `full`）。
-           * 声明了但电脑端是旧版也别怕：旧版不认这个参数，照旧发整帧，本端同样能渲染。
-           */
-          streamMode: 'delta',
-        },
-        helloTimeout,
-      )
+      this.handshook = false
+      const hello: HelloResult = await this.handshake(endpoint, options.token, helloTimeout)
+      this.handshook = true
 
       active = { transport, endpoint }
       setActive(endpoint, caller)
@@ -348,12 +357,18 @@ class ConnectionStore extends Store<ConnectionState> {
       this.offError = null
       endpoint.dispose()
       transport.close()
+      const reason = classifyError(err)
       if (isReconnect) {
-        // 重连失败：不把用户踢回登录页（会话与消息还在内存），由退避继续或等手动重连
+        // 硬拒绝（凭证被移除 / 过期 / 被顶号 / 明确拒绝）：继续重连毫无意义，且会让界面停在
+        // 「在线」自欺 —— 必须退回登录页并给对应文案（见 `HARD_DENIALS`）。
+        if (HARD_DENIALS.has(reason)) {
+          this.failHard(reason, err)
+          return false
+        }
+        // 软失败：不把用户踢回登录页（会话与消息还在内存），由退避继续或等手动重连
         this.setState((s) => ({ ...s, link: 'closed' }))
         return false
       }
-      const reason = classifyError(err)
       this.setState({
         status: 'error',
         targetName: options.deviceName,
@@ -362,7 +377,93 @@ class ConnectionStore extends Store<ConnectionState> {
         error: { reason, message: describeError(err, reason) },
       })
       return false
+    } finally {
+      // 无论成败，本次「连接流程」结束 ——「链路 open 时是否该补发 hello」据此判断
+      this.connecting = false
     }
+  }
+
+  /**
+   * 发一次 `host.hello`（首次连接与「链路代际更替后的重新授权」共用）。
+   *
+   * 抽出来是为了让两处同一份报文：少一处手写的差异，就少一个「重连时参数不对」的坑。
+   */
+  private async handshake(endpoint: Endpoint, token: string, timeoutMs: number): Promise<HelloResult> {
+    const caller = createCaller<HostApi>(endpoint)
+    const identity = mobileIdentity()
+    return caller.call(
+      'host.hello',
+      {
+        protocolVersion: 1,
+        client: { platform: detectPlatform(), appVersion: '0.1.0' },
+        capabilities: CLIENT_CAPABILITIES,
+        token,
+        // M6：手机身份 —— 电脑端用它建「已绑定手机」列表项，并把它绑在授权凭证上
+        mobileKey: identity.deviceKey,
+        mobileName: identity.name,
+        /**
+         * §32：声明本端能按**增量帧**解析流式正文。
+         *
+         * 为何必须由客户端声明：老客户端（已缓存的 PWA）会把一帧增量当成全文渲染 ——
+         * 那就不是带宽问题而是**正文错位**。不声明就继续收整帧（`store-bridge` 默认 `full`）。
+         * 声明了但电脑端是旧版也别怕：旧版不认这个参数，照旧发整帧，本端同样能渲染。
+         */
+        streamMode: 'delta',
+      },
+      timeoutMs,
+    )
+  }
+
+  /**
+   * 链路代际更替后的**重新授权**。
+   *
+   * 授权是**每条链路**一份（电脑端每条链路重建 `PhoneBridge` 并开握手闸门），而链路可以在
+   * 「同一次会话里」被对端透明重建 —— 本端只看到 `connecting → open`，不会重跑 `connect()`，
+   * 也就不会重发 `hello`。此时旧授权已随旧链路作废：若不重新握手，就会出现
+   * 「手机显示在线、电脑端停在正在验证、实际所有 `host.*` 都被拒」—— 即「移除后它又连回来」的假象。
+   *
+   * `hello` 被硬拒绝 → 回登录页（`failHard`）；软失败 → 并入既有重连机制（`noteLinkDead`）。
+   */
+  private async reverify(): Promise<void> {
+    const endpoint = active?.endpoint
+    const opts = this.lastOptions
+    if (!endpoint || !opts) return
+    this.handshook = false
+    try {
+      await this.handshake(endpoint, opts.token, HELLO_TIMEOUT_MS)
+      this.handshook = true
+    } catch (err) {
+      const reason = classifyError(err)
+      if (HARD_DENIALS.has(reason)) {
+        this.failHard(reason, err)
+        return
+      }
+      // 软失败：当作链路已死，走统一的重连收口（重连的账只记一处）
+      this.noteLinkDead()
+    }
+  }
+
+  /**
+   * 硬拒绝 / 不可恢复 → 退回登录页（停止一切自动重连）。
+   *
+   * 与 `giveUpReconnecting` 的区别只在「文案」：那条说「重试次数用尽」，这条说具体原因
+   * （已被移除 / 凭证过期 / 被顶号…）—— 用户看到后要做的事是不同的。
+   */
+  private failHard(reason: ConnectErrorReason, err: unknown): void {
+    this.clearReconnectTimer()
+    this.clearGraceTimer()
+    // 不再自动重连，也不保留重连参数（否则链路一抖又「偷偷连回去」）
+    this.lastOptions = null
+    this.reconnectAttempt = 0
+    this.closeActive()
+    chatStore.reset()
+    this.setState({
+      status: 'error',
+      capabilities: [],
+      link: 'closed',
+      reconnecting: undefined,
+      error: { reason, message: describeError(err, reason) },
+    })
   }
 
   /** 断开并回到登录页。 */
@@ -397,12 +498,22 @@ class ConnectionStore extends Store<ConnectionState> {
     // 被顶号：后续的状态变化（closed）不再参与任何决策 —— 重连会去抢别人的线
     if (this.replaced) return
     const cur = this.getSnapshot()
+    // 链路一离开 `open`，这条链路上的授权就作废了（授权是 per-link 的）
+    if (state !== 'open') this.handshook = false
     if (state === 'open') {
       this.reconnectAttempt = 0
       this.clearReconnectTimer()
       this.clearGraceTimer()
       if (cur.link !== 'open' || cur.reconnecting) {
         this.setState({ ...cur, link: 'open', reconnecting: undefined })
+      }
+      /*
+       * 链路代际更替（`connecting → open`）后要**重新授权**：旧链路的授权已作废，而本端此刻
+       * 仍是登录态 —— 若不重发 `hello`，就会出现「手机显示在线、电脑端停在正在验证」
+       * （见 `reverify`）。`connect()` 进行中跳过：那一次的 hello 由 `connect` 自己发。
+       */
+      if (!this.connecting && cur.status === 'online' && !this.handshook) {
+        void this.reverify()
       }
       return
     }
@@ -464,24 +575,21 @@ class ConnectionStore extends Store<ConnectionState> {
    */
   private onLinkError(err: unknown): void {
     if (!(err instanceof BridgeError) || err.code !== 'E_REPLACED') return
+    // 被顶号 = 硬拒绝的一种：与其它硬拒绝同一收口（停重连 + 回登录页 + 专用文案）
     this.replaced = true
-    this.clearReconnectTimer()
-    this.clearGraceTimer()
-    // 清掉重连参数：用户手动点「连接」时才会重新发起（那时再抢回控制权是明确意图）
-    this.lastOptions = null
-    this.closeActive()
-    chatStore.reset()
-    this.setState({
-      status: 'error',
-      capabilities: [],
-      link: 'closed',
-      reconnecting: undefined,
-      error: { reason: 'replaced', message: describeError(err, 'replaced') },
-    })
+    this.failHard('replaced', err)
   }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
+    /*
+     * 已被硬拒绝 / 已放弃 / 主动断开（`lastOptions` 为空）→ 不再排新的重连。
+     *
+     * 否则硬拒绝之后，`connect(...).then((ok) => { if (!ok) this.scheduleReconnect() })`
+     * 会立刻又挂上一个「重连中 N/3」，而实际上一次都不会再试 —— 界面与事实相反。
+     */
+    if (this.replaced || !this.lastOptions) return
+    if (this.getSnapshot().status !== 'online') return
     const delay = RECONNECT_DELAYS[this.reconnectAttempt]
     if (delay === undefined) {
       // 退避次数用尽 → 回登录页（用户在那儿可重连或重新扫码）
@@ -544,6 +652,8 @@ class ConnectionStore extends Store<ConnectionState> {
   }
 
   private closeActive(): void {
+    // 链路一拆，per-link 的授权随之作废
+    this.handshook = false
     // 先退订旧链路的回调：`transport.close()` 会同步/异步地引发状态变化，
     // 若此时回调还挂着，会把「正在重连」误判成「又掉线了一次」
     this.offLink?.()

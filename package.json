@@ -16,7 +16,7 @@
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "virlen-remote": "^0.1.0"
+    "virlen-remote": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

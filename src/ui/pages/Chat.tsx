@@ -42,6 +42,8 @@ const MessageRow = memo(function MessageRow({ message }: { message: MessageDTO }
   const [open, setOpen] = useState(false)
 
   if (message.role === 'tool') {
+    // 折叠态**只显示工具名**（用户要求，2026-10-01）：工具调用在对话流里是高频噪声，
+    // 折叠时应尽可能克制 —— 只留「这一步调了什么」，预览 / 正文都要展开后才占位。
     return (
       <div className="msg msg--tool">
         <button
@@ -49,11 +51,14 @@ const MessageRow = memo(function MessageRow({ message }: { message: MessageDTO }
           className="msg__tool-head"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
+          title={open ? '收起工具输出' : '展开工具输出'}
         >
+          <span className="msg__tool-chevron" aria-hidden="true">
+            {open ? '▾' : '▸'}
+          </span>
           {/* 工具名由电脑侧解析（`buildToolNameIndex`），手机端不猜 */}
           <span className="msg__tool-tag">{toolLabel(message)}</span>
-          <span className="msg__tool-preview">{toolPreview(message)}</span>
-          <span className="msg__tool-toggle">{open ? '收起' : '展开'}</span>
+          {open && <span className="msg__tool-preview">{toolPreview(message)}</span>}
         </button>
         {open && <pre className="msg__tool-body">{message.text}</pre>}
       </div>

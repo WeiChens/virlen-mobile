@@ -99,17 +99,41 @@
 .sgroup {
   margin-top: 8px;
 }
-.sgroup__title {
+.sgroup--alert {
+  border: 1px solid #3a4a7a;
+  border-radius: 10px;
+  padding: 2px 2px 4px;
+  background: #171c2c;
+}
+.sgroup__head {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0;
-  padding: 4px 6px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #8a8a94;
+  padding: 6px;
+  font: inherit;
   font-size: 12px;
   font-weight: 500;
-  color: #8a8a94;
+  cursor: pointer;
+}
+.sgroup__head:active {
+  background: #202027;
+}
+.sgroup__chevron {
+  flex: none;
+  width: 10px;
+  text-align: center;
+  color: #7c7c86;
+  font-size: 10px;
 }
 .sgroup__label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -121,6 +145,24 @@
   padding: 0 6px;
   font-size: 11px;
   color: #7c7c86;
+}
+/* 收起态「有动静」标记：工作在跑或含当前会话 → 亮一个脉动蓝点 */
+.sgroup--alert .sgroup__label {
+  color: #cfcfd6;
+}
+.sgroup__alert-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4f7cff;
+  animation: drawer-pulse 1.4s ease-in-out infinite;
+}
+.sgroup__hint {
+  margin: 0;
+  padding: 0 8px 4px 22px;
+  font-size: 11px;
+  color: #9fb6ff;
 }
 .srow {
   display: flex;

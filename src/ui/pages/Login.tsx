@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import QrScanner from '../../components/QrScanner'
 import { useStore } from '../../lib/store'
 import {
@@ -110,12 +110,17 @@ export default function Login() {
     }
   }, [devicesFingerprint])
 
-  const handleScanned = (text: string) => {
-    setScanning(false)
+  /**
+   * 解析配对数据并发起配对；解析失败时给出 `invalidMsg` 文案。
+   *
+   * 三个入口共用它：App 内扫码、手动粘贴、以及**从 `?t=` 链接打开**（系统相机 / 微信扫码）。
+   * `parsePairingPayload` 三种输入都认（URL / `vrp1:` 串 / 旧明文 JSON）。
+   */
+  const startPairing = (text: string, invalidMsg: string): boolean => {
     const payload: PairingPayload | null = parsePairingPayload(text)
     if (!payload) {
-      setParseError('无法识别该二维码（不是 Virlen 配对码）')
-      return
+      setParseError(invalidMsg)
+      return false
     }
     // 手上是**一次性票据**：电脑端会弹窗等用户点确认，这一步可能停在几十秒
     connectTo(payload.host, payload.name, payload.ticket, {
@@ -123,22 +128,41 @@ export default function Login() {
       room: payload.room,
       pairing: true,
     })
+    return true
+  }
+
+  const handleScanned = (text: string) => {
+    setScanning(false)
+    startPairing(text, '无法识别该二维码（不是 Virlen 配对码）')
   }
 
   const handleManual = () => {
-    const payload = parsePairingPayload(manual.trim())
-    if (!payload) {
-      setParseError('配对串格式不正确')
-      return
-    }
-    setManual('')
     // 与扫码同一条路径（同是票据，同样要等电脑端确认）
-    connectTo(payload.host, payload.name, payload.ticket, {
-      signalUrl: payload.signal,
-      room: payload.room,
-      pairing: true,
-    })
+    if (startPairing(manual.trim(), '配对串格式不正确')) setManual('')
   }
+
+  /**
+   * 系统相机 / 微信扫开 `https://virlen.cn/mobile?t=<配对数据>` 时：自动开始配对。
+   *
+   * 参数消费后立刻从地址栏抹掉（`replaceState`）—— 否则刷新 / 退回时会被反复触发。
+   * 用 ref 兑一次：StrictMode 下 effect 会跑两遍。
+   */
+  const autoPairedRef = useRef(false)
+  useEffect(() => {
+    if (autoPairedRef.current) return
+    autoPairedRef.current = true
+    let code: string | null = null
+    try {
+      code = new URLSearchParams(window.location.search).get('t')
+    } catch {
+      code = null
+    }
+    if (!code) return
+    window.history.replaceState(null, '', window.location.pathname)
+    startPairing(code, '配对链接无效（不是 Virlen 配对码）')
+    // 只在挂载时跑一次；`startPairing` 每轮渲染都会重建，故意不进依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /**
    * 展开「高级设置：ICE」时回填文本框 + 解析一次（状态行要有内容）。
@@ -234,11 +258,11 @@ export default function Login() {
       </section>
 
       <details className="login__manual">
-        <summary>手动输入配对串</summary>
+        <summary>手动输入 / 粘贴配对链接</summary>
         <textarea
           className="login__textarea"
           rows={3}
-          placeholder='{"v":2,"host":"dk-…","name":"Virlen 电脑","ticket":"…","signal":"https://virlen.cn/api/rtc/"}'
+          placeholder='https://virlen.cn/mobile?t=… 或 vrp1:…（从电脑端「配对链接」整段粘过来）'
           value={manual}
           onChange={(e) => setManual(e.target.value)}
         />
@@ -246,7 +270,8 @@ export default function Login() {
           连接
         </button>
         <p className="login__tip">
-          提示：二维码里的票据是一次性的、只有 5 分钟有效；配对成功后手机会拿到长期凭证，
+          提示：用系统相机 / 微信直接扫电脑端那张码，会自动打开本页并开始配对；
+          二维码里的票据是一次性的、只有 5 分钟有效。配对成功后手机会拿到长期凭证，
           之后从这里直接点「连接」即可，不必再扫码。
         </p>
       </details>

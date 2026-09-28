@@ -62,6 +62,15 @@ export default function QrScanner({ onResult, onCancel }: Props) {
   const [torchOn, setTorchOn] = useState(false)
   const [zoom, setZoomValue] = useState<number | null>(null)
   const [slow, setSlow] = useState(false)
+  /**
+   * 取景框（reticle）的**像素边长**。
+   *
+   * 为什么用 JS 算而不是纯 CSS：视频用 `object-fit: contain` 铺进全屏后，
+   * 实际显示框随**视频宽高比 × 屏幕宽高比**变化（横屏流在竖屏上有上下黑边）。
+   * 用 `min(72vw,72vh)` 这类纯 CSS 尺寸会在竖屏手机上跑出画面、落到黑边上，
+   * 所以按「视频真实显示框」的 70% 来定（`null` = 还没算出来，用 CSS 兜底）。
+   */
+  const [reticle, setReticle] = useState<number | null>(null)
 
   // 用 ref 持有回调：避免父级重渲染导致 effect 重启（重启会重新申请摄像头、白闪）
   const onResultRef = useRef(onResult)
@@ -192,6 +201,32 @@ export default function QrScanner({ onResult, onCancel }: Props) {
     }
   }, [])
 
+  // 取景框尺寸跟随「视频按 contain 铺进屏幕后的实际显示框」（见 reticle 注释）
+  useEffect(() => {
+    if (!ready) return
+    const compute = () => {
+      const video = videoRef.current
+      if (!video) return
+      const vw = video.videoWidth
+      const vh = video.videoHeight
+      if (!vw || !vh) return
+      // 与 CSS 的 `object-fit: contain` 同一套算法：等比缩放至刚好放进屏幕
+      const scale = Math.min(window.innerWidth / vw, window.innerHeight / vh)
+      const side = Math.min(vw * scale, vh * scale) * 0.7
+      setReticle(Math.round(side))
+    }
+    compute()
+    const video = videoRef.current
+    video?.addEventListener('loadedmetadata', compute)
+    window.addEventListener('resize', compute)
+    window.addEventListener('orientationchange', compute)
+    return () => {
+      video?.removeEventListener('loadedmetadata', compute)
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('orientationchange', compute)
+    }
+  }, [ready])
+
   const zoomRange = support?.zoom ?? null
   const canControlFocus = support?.continuous === true || support?.singleShot === true
   const showsAnyTool = canControlFocus || support?.torch === true || zoomRange !== null
@@ -220,49 +255,24 @@ export default function QrScanner({ onResult, onCancel }: Props) {
 
   return (
     <div className="scanner">
-      <div className="scanner__frame">
-        <video ref={videoRef} className="scanner__video" playsInline muted />
-        <canvas ref={canvasRef} className="scanner__canvas" />
-        {ready && !error && <div className="scanner__reticle" />}
-      </div>
+      {/* 全屏取景：视频铺满整屏（`object-fit: cover`），不再限制在小方框里 */}
+      <video ref={videoRef} className="scanner__video" playsInline muted />
+      <canvas ref={canvasRef} className="scanner__canvas" />
 
-      {ready && !error && showsAnyTool && (
-        <div className="scanner__tools">
-          {canControlFocus && (
-            <button type="button" className="scanner__tool" onClick={handleRefocus}>
-              重新对焦
-            </button>
-          )}
-          {support?.torch === true && (
-            <button
-              type="button"
-              className={`scanner__tool${torchOn ? ' is-on' : ''}`}
-              onClick={() => void handleTorch()}
-            >
-              {torchOn ? '关闭补光' : '打开补光'}
-            </button>
-          )}
-          {zoomRange !== null && zoom !== null && (
-            <span className="scanner__zoom">
-              <button
-                type="button"
-                className="scanner__tool"
-                onClick={() => void handleZoom(-1)}
-                aria-label="缩小"
-              >
-                −
-              </button>
-              <span className="scanner__zoom-value">{zoom.toFixed(1)}×</span>
-              <button
-                type="button"
-                className="scanner__tool"
-                onClick={() => void handleZoom(1)}
-                aria-label="放大"
-              >
-                ＋
-              </button>
-            </span>
-          )}
+      {/*
+        取景框只是**视觉引导**（居中、四角括号，`pointer-events: none`）。
+        解码其实覆盖**全帧**（见 `lib/scan-plan.ts`），码放在屏幕任意位置都能扫到。
+      */}
+      {ready && !error && (
+        <div
+          className="scanner__reticle"
+          aria-hidden="true"
+          style={reticle ? { width: reticle, height: reticle } : undefined}
+        >
+          <span className="scanner__corner scanner__corner--tl" />
+          <span className="scanner__corner scanner__corner--tr" />
+          <span className="scanner__corner scanner__corner--bl" />
+          <span className="scanner__corner scanner__corner--br" />
         </div>
       )}
 
@@ -272,8 +282,8 @@ export default function QrScanner({ onResult, onCancel }: Props) {
           <span>{error}</span>
         </div>
       ) : (
-        <div className="scanner__tips">
-          <p className="scanner__hint">将电脑端二维码放入取景框</p>
+        <div className="scanner__hud">
+          <p className="scanner__hint">将电脑端二维码放入画面，任意位置均可识别</p>
 
           {ready && !showsAnyTool && (
             <p className="scanner__notice">
@@ -292,9 +302,51 @@ export default function QrScanner({ onResult, onCancel }: Props) {
         </div>
       )}
 
-      <button type="button" className="btn btn--ghost" onClick={onCancel}>
-        返回（改用手动输入）
-      </button>
+      <div className="scanner__controls">
+        {ready && !error && showsAnyTool && (
+          <div className="scanner__tools">
+            {canControlFocus && (
+              <button type="button" className="scanner__tool" onClick={handleRefocus}>
+                重新对焦
+              </button>
+            )}
+            {support?.torch === true && (
+              <button
+                type="button"
+                className={`scanner__tool${torchOn ? ' is-on' : ''}`}
+                onClick={() => void handleTorch()}
+              >
+                {torchOn ? '关闭补光' : '打开补光'}
+              </button>
+            )}
+            {zoomRange !== null && zoom !== null && (
+              <span className="scanner__zoom">
+                <button
+                  type="button"
+                  className="scanner__tool"
+                  onClick={() => void handleZoom(-1)}
+                  aria-label="缩小"
+                >
+                  −
+                </button>
+                <span className="scanner__zoom-value">{zoom.toFixed(1)}×</span>
+                <button
+                  type="button"
+                  className="scanner__tool"
+                  onClick={() => void handleZoom(1)}
+                  aria-label="放大"
+                >
+                  ＋
+                </button>
+              </span>
+            )}
+          </div>
+        )}
+
+        <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          返回（改用手动输入）
+        </button>
+      </div>
     </div>
   )
 }

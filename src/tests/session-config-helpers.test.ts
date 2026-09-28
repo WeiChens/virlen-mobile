@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { SessionSummaryDTO } from 'virlen-remote'
-import { baseNameOf, groupSessions } from '../lib/session-groups'
+import { baseNameOf, groupNeedsAttention, groupSessions } from '../lib/session-groups'
 import {
   contextPercent,
   formatTokens,
@@ -57,6 +57,23 @@ describe('groupSessions —— 抽屉分组', () => {
   it('baseNameOf：取末级目录名（Windows 路径也用 / 归一化过）', () => {
     expect(baseNameOf('E:/code/virlen')).toBe('virlen')
     expect(baseNameOf('E:')).toBe('E:')
+  })
+
+  it('groupNeedsAttention：组内有工作中 / 含当前会话 → 收起态需要提醒', () => {
+    const [g1, g2] = groupSessions(
+      [
+        session({ id: 'a', agentId: 'ag-1', agentName: 'Virlen', working: true }),
+        session({ id: 'b', agentId: 'ag-2', agentName: '评审员' }),
+      ],
+      'agent',
+    )
+    // 组里有会话在干活 → 提醒（哪怕没在看它）
+    expect(groupNeedsAttention(g1, null)).toBe(true)
+    // 组里含当前会话 → 提醒（哪怕没在干活）
+    expect(groupNeedsAttention(g2, 'b')).toBe(true)
+    // 既没干活也不是当前会话 → 不提醒
+    expect(groupNeedsAttention(g2, 'a')).toBe(false)
+    expect(groupNeedsAttention(g2, null)).toBe(false)
   })
 })
 

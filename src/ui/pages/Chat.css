@@ -355,17 +355,25 @@
 .msg__tool-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   text-align: left;
   border: 1px solid #2c2c34;
   border-radius: 10px;
   background: #16161b;
   color: #9a9aa4;
-  padding: 7px 10px;
+  padding: 6px 10px;
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+/* 展开 / 收起指示：折叠态只留一个三角，不再占一整行宽度 */
+.msg__tool-chevron {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: #7c7c86;
+  font-size: 10px;
 }
 .msg__tool-tag {
   flex: none;
@@ -374,15 +382,13 @@
   padding: 0 5px;
   color: #b9b9c3;
 }
+/* 预览只在展开态出现（折叠态只显示工具名） */
 .msg__tool-preview {
   flex: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.msg__tool-toggle {
-  flex: none;
-  color: #7ea2ff;
+  color: #7c7c86;
 }
 .msg__tool-body {
   margin: 0;

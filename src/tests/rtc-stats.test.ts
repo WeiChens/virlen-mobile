@@ -4,9 +4,12 @@
  * 为什么这些断言值得写：**真机上的 WebRTC 跑不进 CI**，而「这条链路到底走没走中继」
  * 恰恰是用户看得见、又最容易说反的一件事（说反了会让人去查错方向：
  * 明明是打洞成功却说在走服务器，或者反过来把中继当直连去怀疑别处）。
- * 所以口径必须用假 stats 钉死，且**与电脑端 `link-kind.ts` 同一套**。
+ * 所以口径必须用假 stats 钉死。判定的**唯一实现**在共享包 `virlen-remote` 的 `classifyLinkKind`
+ * （电脑端与手机端共用同一份）。本文件断言 `summarizeRtcStats` 的 `path` 与它一致 ——
+ * 这也是防止有人又把判定抄回本端的守卫。
  */
 import { describe, expect, it } from 'vitest'
+import { classifyLinkKind } from 'virlen-remote'
 import {
   candidateText,
   formatBytes,
@@ -247,5 +250,14 @@ describe('展示辅助', () => {
     expect(formatRtt(150)).toContain('一般')
     expect(formatRtt(600)).toContain('偏慢')
     expect(formatRtt(null)).toBe('—')
+  })
+})
+
+describe('判定委托给共享包 —— 本端不再自己判「直连 / 中继」', () => {
+  it('summarizeRtcStats().path 与共享包 classifyLinkKind() 完全一致', () => {
+    for (const stats of [DIRECT, RELAY]) {
+      expect(summarizeRtcStats(stats).path).toBe(classifyLinkKind(stats))
+    }
+    expect(summarizeRtcStats([]).path).toBe(classifyLinkKind([]))
   })
 })

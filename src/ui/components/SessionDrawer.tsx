@@ -15,6 +15,7 @@ import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import {
   baseNameOf,
+  groupNeedsAttention,
   groupSessions,
   readGroupMode,
   writeGroupMode,
@@ -33,10 +34,21 @@ export default function SessionDrawer({ open, onClose }: Props) {
   const conn = useStore(connectionStore)
   // 分组方式持久化（PWA 重开后保持选择）
   const [mode, setMode] = useState<GroupMode>(readGroupMode)
+  /**
+   * 分组的展开态（键 = `group.key`）。
+   *
+   * ⚠️ **默认全部收起**（用户要求，2026-10-01）：抽屉一打开时，会话列表可能很长，
+   * 先给一张「组目录」，用户按需展开；收起态下仍有工作的 / 当前的分组会被高亮提醒
+   * （`groupNeedsAttention`），不会出现「藏起来就丢信息」。
+   */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   if (!open) return null
 
   const groups = groupSessions(chat.sessions, mode)
+
+  const toggleGroup = (key: string) =>
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
 
   const pick = (sessionId: string) => {
     void chatStore.openSession(sessionId)
@@ -85,33 +97,54 @@ export default function SessionDrawer({ open, onClose }: Props) {
           {chat.sessions.length === 0 && (
             <p className="drawer__hint">{chat.loadingSessions ? '加载会话…' : '电脑上还没有会话'}</p>
           )}
-          {groups.map((group) => (
-            <section key={group.key} className="sgroup">
-              <h3 className="sgroup__title" title={group.label}>
-                <span className="sgroup__label">{group.label}</span>
-                <span className="sgroup__count">{group.sessions.length}</span>
-              </h3>
-              {group.sessions.map((session) => (
+          {groups.map((group) => {
+            const isOpen = expanded[group.key] === true
+            // 高亮只在收起态生效：展开后内容自现，再高亮反而多余
+            const alert = !isOpen && groupNeedsAttention(group, chat.currentSessionId)
+            const workingCount = group.sessions.filter((s) => s.working).length
+            return (
+              <section key={group.key} className={`sgroup${alert ? ' sgroup--alert' : ''}`}>
                 <button
-                  key={session.id}
                   type="button"
-                  className={`srow${session.id === chat.currentSessionId ? ' srow--active' : ''}`}
-                  onClick={() => pick(session.id)}
+                  className="sgroup__head"
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={isOpen}
+                  title={group.label}
                 >
-                  <span className="srow__main">
-                    <span className="srow__title">{session.title || '(无标题)'}</span>
-                    <span className="srow__meta">{metaOf(session, mode)}</span>
+                  <span className="sgroup__chevron" aria-hidden="true">
+                    {isOpen ? '▾' : '▸'}
                   </span>
-                  {session.working && <span className="srow__dot" title="正在回复中" />}
-                  {session.pinned && (
-                    <span className="srow__pin" title="已置顶">
-                      ★
-                    </span>
-                  )}
+                  <span className="sgroup__label">{group.label}</span>
+                  {alert && <span className="sgroup__alert-dot" aria-hidden="true" />}
+                  <span className="sgroup__count">{group.sessions.length}</span>
                 </button>
-              ))}
-            </section>
-          ))}
+                {isOpen &&
+                  group.sessions.map((session) => (
+                    <button
+                      key={session.id}
+                      type="button"
+                      className={`srow${session.id === chat.currentSessionId ? ' srow--active' : ''}`}
+                      onClick={() => pick(session.id)}
+                    >
+                      <span className="srow__main">
+                        <span className="srow__title">{session.title || '(无标题)'}</span>
+                        <span className="srow__meta">{metaOf(session, mode)}</span>
+                      </span>
+                      {session.working && <span className="srow__dot" title="正在回复中" />}
+                      {session.pinned && (
+                        <span className="srow__pin" title="已置顶">
+                          ★
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                {/* 收起且组内有会话在干活：给一句「几个在干活」，比一个点更明确 */}
+                {!isOpen && workingCount > 0 && (
+                  <p className="sgroup__hint">{workingCount} 个会话正在工作</p>
+                )}
+              </section>
+            )
+          })}
         </div>
 
         {/* 断开连接总能到达（新对话状态下没有会话信息面板） */}
