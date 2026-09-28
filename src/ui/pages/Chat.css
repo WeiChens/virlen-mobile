@@ -93,6 +93,28 @@
   background: #26262e;
 }
 
+/* ── 通讯信号图标：**颜色就是结论**（图标本身只认 currentColor，不自己带色） ──
+   绿=直连、黄=中继、橙=正在恢复、红=已断、灰=未知。 */
+.iconbtn--signal-good {
+  color: #7fd8a0;
+  border-color: #2b4436;
+}
+.iconbtn--signal-relay {
+  color: #ffd98a;
+  border-color: #4a3a14;
+}
+.iconbtn--signal-warn {
+  color: #ffb066;
+  border-color: #4a3520;
+}
+.iconbtn--signal-down {
+  color: #ff9a9a;
+  border-color: #4a2626;
+}
+.iconbtn--signal-plain {
+  color: #cfcfd6;
+}
+
 /* ── 横幅区 ── */
 .chat__notice {
   display: flex;

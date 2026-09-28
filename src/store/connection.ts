@@ -5,6 +5,11 @@
  * - 成功 → `online`（进入 chat 页）
  * - **不在线** → 电脑端无响应（hello 超时 / 链路不可用）→ `error: 'offline' | 'timeout'`
  * - **被拒绝** → 电脑端明确拒绝（令牌过期 / 设备被移除）→ `error: 'denied'`
+ *
+ * **登录之后的链路**（M10）：掉线不把用户踢回登录页，而是自动重连（最多 3 次）；
+ * 重连次数用尽才回登录页（`error: 'dropped'`）。「链路已死」有三个来源 ——
+ * 链路状态上报（吵的死）、`linkStore` 的心跳失联（静的死）、`connecting` 宽限看门狗
+ * （浏览器不再给任何事件的那种）—— 三者都汇到 `noteLinkDead()`，重连的账只记一处。
  */
 import {
   BridgeError,
@@ -20,8 +25,9 @@ import { mobileIdentity } from '../lib/identity'
 import { createTransport } from '../api/transport'
 import { resolveIceFor } from '../api/ice'
 import { clearActive, setActive } from '../api/active'
-import { devicesStore } from './devices'
+import { devicesStore, deviceLabel } from './devices'
 import { chatStore } from './chat'
+import { linkStore } from './link'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'online' | 'error'
 
@@ -40,6 +46,8 @@ export type ConnectErrorReason =
   | 'revoked'
   | 'ticket-expired'
   | 'replaced'
+  /** 链路中断后自动重连次数用尽 —— 已退回登录页（见 `giveUpReconnecting`）。 */
+  | 'dropped'
   | 'version'
   | 'unknown'
 
@@ -73,6 +81,17 @@ export interface ConnectOptions {
   /** 信令房间号（默认由 hostId 派生）。 */
   room?: string
   /**
+   * 本次连接手上是**一次性配对票据**（扫码 / 手输配对串）= 「现场配对」。
+   *
+   * 为什么必须显式传：电脑端在这种情形下会**弹窗等用户点确认**才回 hello，
+   * 握手要给到 `PAIRING_HELLO_TIMEOUT_MS`（60 秒）；已配对设备凭凭证直连，
+   * 电脑端立刻应答，保持 4 秒的快速失败（否则「电脑不在线」要等一分钟才说出来）。
+   *
+   * ⚠️ 不要试图用令牌前缀（`pr-`）判断：前缀在共享包里**明确不作校验**，
+   * 靠它判分支等于埋一个「电脑端改了前缀 → 静默退回 4 秒」的坑。
+   */
+  pairing?: boolean
+  /**
    * 测试注入：直接指定 transport。
    * 生产路径不传 —— 由 `createTransport` 按 `signalUrl` 选择（M3 RTC / M2 Broadcast）。
    */
@@ -86,8 +105,25 @@ export interface ConnectOptions {
   mode?: 'connect' | 'reconnect'
 }
 
-/** hello 握手超时：超过即判定「电脑不在线」。 */
+/**
+ * hello 握手超时的**默认值**：超过即判定「电脑不在线」。
+ *
+ * 只适用于「已配对设备凭凭证直连」—— 电脑端查一次凭证表就应答，4 秒足够快失败。
+ * 现场配对（电脑端要弹窗等人点）用 `PAIRING_HELLO_TIMEOUT_MS`。
+ */
 const HELLO_TIMEOUT_MS = 4000
+/**
+ * **现场配对**时的 hello 握手超时（60 秒）。
+ *
+ * 首次配对不是「机器对机器」：电脑端会弹一个确认框，**等用户点完**才回 hello
+ * （电脑端 `host-source` 的 `await confirmPair(...)`）。用那 4 秒会把人看弹窗的时间
+ * 误报成「电脑不在线」—— 真机上的表现就是「手机说连不上，可电脑明明弹了窗」。
+ *
+ * 为什么是 60 秒而不是「无限等」：配对票本身只有 5 分钟 TTL（`PAIRING_TICKET_TTL_MS`），
+ * 手机端等待期间只有一个转圈、没有任何可点的按钮，总得有个尽头；60 秒够一个人
+ * 看清弹窗并做决定。
+ */
+const PAIRING_HELLO_TIMEOUT_MS = 60_000
 /** 链路建立（信令 + ICE / Broadcast）超时。RTC 打洞较慢，给宽一点。 */
 const LINK_TIMEOUT_MS = 15_000
 /**
@@ -95,8 +131,18 @@ const LINK_TIMEOUT_MS = 15_000
  *
  * 次数**有限**是刻意的：手机可能真的回不到那个网络（电脑关机 / 换网段），
  * 无限重试只会白耗电量与流量，且用户看不出「在重试」与「已放弃」的区别。
+ * 用尽后回登录页（`giveUpReconnecting`）—— 用户在那儿可以重连或重新扫码。
  */
 const RECONNECT_DELAYS = [2000, 5000, 10_000]
+/**
+ * 链路「不再 open」后等多久才动手重连（ms）。
+ *
+ * 为什么要等：`disconnected` 常常**自己会好**（换网、短暂抖动、ICE 重新提名），
+ * 一断开就重建等于把手抖当晕倒。但也不能一直等 —— 它也可能**永远不变**：
+ * 对端进程还在、路径已死时，浏览器不一定再给任何事件，于是界面停在「正在尝试恢复…」
+ * 而其实什么都没在尝试（这正是「要发消息才发现断了」的真面目）。
+ */
+const LINK_GRACE_MS = 8000
 /**
  * 手机端声明的能力（与电脑侧 ACL **取交集**驱动 UI 显隐，§3.5）。
  *
@@ -130,6 +176,13 @@ let active: ActiveConnection | null = null
 class ConnectionStore extends Store<ConnectionState> {
   constructor() {
     super({ status: 'idle', capabilities: [], link: 'closed' })
+    /*
+     * 心跳判定「链路已死」→ 走与「链路状态上报掉线」**同一个收口**。
+     *
+     * 为什么不在这里直接重连：`reconnectAttempt` 与退避定时器只有一处，
+     * 两条路径各自触发就会出现「说重连 3 次、实际试了 7 次」。
+     */
+    linkStore.onStall(() => this.noteLinkDead())
   }
 
   /** 当前链路的「状态变化」退订函数（换链路时必须先退订旧的，否则旧链路的 closed 会引发误重连）。 */
@@ -139,6 +192,8 @@ class ConnectionStore extends Store<ConnectionState> {
   /** 本次连接是否被顶号：置位后**不再自动重连**（否则两台手机会互相顶号）。 */
   private replaced = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  /** 链路「不再 open」的宽限计时器（到点仍没回来 = 按掉线处理）。 */
+  private graceTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
   /** 重连所需的最小信息（**不存 transport**：重建链路必须新建，旧的对端已不可用）。 */
   private lastOptions: ConnectOptions | null = null
@@ -180,6 +235,13 @@ class ConnectionStore extends Store<ConnectionState> {
         signalUrl: options.signalUrl,
         room: options.room,
         ...(ice ? { iceServers: ice.servers } : {}),
+        /*
+         * 把 PC 实例交给链路观测（通讯状态面板据此读候选对：P2P 还是 TURN 中继）。
+         * 回调里引用的 `transport` 在赋值完成之后才会被调用 —— 工厂只在链接入房间后
+         * （`ensurePC`）跑，`createTransport` 本身不会同步调它。
+         */
+        onPeerConnection: (pc) =>
+          linkStore.attach(pc, { bufferedAmount: () => transport.bufferedAmount }),
       })
     const endpoint = new Endpoint({ transport, defaultTimeoutMs: 10_000 })
     // 链路健康度：掉线（`disconnected`→`connecting` / `failed`→`closed`）由它上报
@@ -194,6 +256,8 @@ class ConnectionStore extends Store<ConnectionState> {
       await withTimeout(transport.whenReady ? transport.whenReady() : Promise.resolve(), LINK_TIMEOUT_MS)
 
       const caller = createCaller<HostApi>(endpoint)
+      // 现场配对：电脑端要等用户点确认，握手给足 60 秒（见 PAIRING_HELLO_TIMEOUT_MS）
+      const helloTimeout = options.pairing ? PAIRING_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS
       const identity = mobileIdentity()
       const hello: HelloResult = await caller.call(
         'host.hello',
@@ -214,22 +278,36 @@ class ConnectionStore extends Store<ConnectionState> {
            */
           streamMode: 'delta',
         },
-        HELLO_TIMEOUT_MS,
+        helloTimeout,
       )
 
       active = { transport, endpoint }
       setActive(endpoint, caller)
 
+      /*
+       * 显示名：**本地改的名字优先**于电脑自报的名字。
+       *
+       * `host.hello` 每次都会重报 `deviceName`，直接用它会让改过名的顶栏在
+       * 「掉线重连一次」之后悄悄变回原名（同一个 `alias` 被 `upsert` 保住了，
+       * 但顶栏读的是这里的 `device`，两处必须同一个口径）。
+       * 电脑自报的名字仍然存进设备记录（`name`），列表里要显示「原名」时靠它。
+       */
+      const previous = devicesStore.find(hello.deviceId || options.hostId)
       const device = {
         id: hello.deviceId || options.hostId,
-        name: hello.deviceName || options.deviceName,
+        name: previous ? deviceLabel(previous) : hello.deviceName || options.deviceName,
       }
       // 能力集交给 chatStore：PWA 总是最新的，而电脑端可能是旧版本 ——
       // 旧电脑没有的新能力对应的方法一律**静默不发**（而不是把 E_DENIED 顶到界面上）
       chatStore.setCapabilities(hello.capabilities)
       devicesStore.upsert({
         hostKey: device.id,
-        name: device.name,
+        /*
+         * ⚠️ 存的是**电脑自报的名字**，不是上面那个 `device.name`。
+         * 后者可能是用户改的别名 —— 当成 `name` 写进去就污染了「电脑的事实」这一列：
+         * 列表里的「原名」会变得莫名其妙，`rename()` 里「与原名相同就不算改过」的判据也失效。
+         */
+        name: hello.deviceName || options.deviceName,
         // ⚠️ 存**电脑端回传的凭证**，不是手上那张一次性票据（§30.3）：
         //    旧版电脑端不回 grant，则退回用本次令牌（旧行为，不弄丢设备记录）
         grant: hello.grant?.token ?? options.token,
@@ -239,8 +317,13 @@ class ConnectionStore extends Store<ConnectionState> {
         lastConnectedAt: Date.now(),
       })
       this.reconnectAttempt = 0
-      // 注入的 transport 不能用于重连（测试 / 联调专用），故不记住重连参数
-      this.lastOptions = options.transport ? null : { ...options, mode: 'connect' }
+      /*
+       * 注入的 transport 不能用于重连（测试 / 联调专用），故不记住重连参数。
+       *
+       * `pairing` 也是**一次性**的：重连走的是已签发的凭证，电脑端不再弹窗，
+       * 不该把 60 秒的等待带进重连（那会让「电脑不在线」的回退慢得莫名其妙）。
+       */
+      this.lastOptions = options.transport ? null : { ...options, mode: 'connect', pairing: false }
       this.setState({
         status: 'online',
         device,
@@ -251,12 +334,20 @@ class ConnectionStore extends Store<ConnectionState> {
       })
       return true
     } catch (err) {
-      endpoint.dispose()
-      transport.close()
+      /*
+       * ⚠️ 顺序关键：**先退订，再关链路**。
+       *
+       * `transport.close()` 会上报 `closed`，此时回调若还挂着，这一次「失败的重连尝试」
+       * 就会被当成「又掉线了一次」→ 重连计数多记一次，极端情况下还能把放弃后的链条重新点着
+       * （回归用例：link-recovery.test.ts 的 seen 会多出一个 1）。这与 `closeActive()`
+       * 里的顺序是同一个道理。
+       */
       this.offLink?.()
       this.offLink = null
       this.offError?.()
       this.offError = null
+      endpoint.dispose()
+      transport.close()
       if (isReconnect) {
         // 重连失败：不把用户踢回登录页（会话与消息还在内存），由退避继续或等手动重连
         this.setState((s) => ({ ...s, link: 'closed' }))
@@ -280,6 +371,7 @@ class ConnectionStore extends Store<ConnectionState> {
     this.lastOptions = null
     this.reconnectAttempt = 0
     this.clearReconnectTimer()
+    this.clearGraceTimer()
     this.closeActive()
     chatStore.reset()
     this.setState({ status: 'idle', capabilities: [], link: 'closed', reconnecting: undefined })
@@ -308,6 +400,7 @@ class ConnectionStore extends Store<ConnectionState> {
     if (state === 'open') {
       this.reconnectAttempt = 0
       this.clearReconnectTimer()
+      this.clearGraceTimer()
       if (cur.link !== 'open' || cur.reconnecting) {
         this.setState({ ...cur, link: 'open', reconnecting: undefined })
       }
@@ -315,9 +408,50 @@ class ConnectionStore extends Store<ConnectionState> {
     }
     const link: LinkState = state === 'connecting' ? 'connecting' : 'closed'
     if (cur.link !== link) this.setState({ ...cur, link })
-    // 已登录状态下链路闭死 → 只能重建（`Transport` 无 `reconnect()`，见 §20.3-4）
-    if (state === 'closed' && cur.status === 'online' && this.lastOptions) {
-      this.scheduleReconnect()
+    if (cur.status !== 'online') return
+    if (state === 'closed') {
+      // 链路闭死 → 只能重建（`Transport` 无 `reconnect()`，见 §20.3-4）
+      this.noteLinkDead()
+      return
+    }
+    /*
+     * `connecting`（`disconnected` 的映射）先只起看门狗，不急着重连：
+     * 它常常自己会好（换网 / 抖动 / ICE 重新提名），而等到底都没好就是个死链路。
+     */
+    this.armGraceTimer()
+  }
+
+  /**
+   * 「链路已死」的唯一收口 —— 状态上报的 `closed`、心跳判定的失联、看门狗到点，都走这里。
+   *
+   * 做成单一入口是因为重连的**账只能记在一处**（`reconnectAttempt` + 退避定时器）：
+   * 三条路径各自触发，就会出现「重连了 3 次」其实试了 7 次的事。
+   */
+  private noteLinkDead(): void {
+    if (this.replaced) return
+    this.clearGraceTimer()
+    const cur = this.getSnapshot()
+    if (cur.status !== 'online' || !this.lastOptions) return
+    if (cur.link !== 'closed') this.setState({ ...cur, link: 'closed' })
+    this.scheduleReconnect()
+  }
+
+  /** 链路 `connecting` 后的宽限期：到点仍未回到 `open` → 按死链路处理。 */
+  private armGraceTimer(): void {
+    if (this.graceTimer || this.replaced) return
+    this.graceTimer = setTimeout(() => {
+      this.graceTimer = null
+      const cur = this.getSnapshot()
+      // 宽限期内已恢复（或已有人抢了重连的活）就不插手
+      if (cur.link === 'open' || cur.status !== 'online') return
+      this.noteLinkDead()
+    }, LINK_GRACE_MS)
+  }
+
+  private clearGraceTimer(): void {
+    if (this.graceTimer) {
+      clearTimeout(this.graceTimer)
+      this.graceTimer = null
     }
   }
 
@@ -332,6 +466,7 @@ class ConnectionStore extends Store<ConnectionState> {
     if (!(err instanceof BridgeError) || err.code !== 'E_REPLACED') return
     this.replaced = true
     this.clearReconnectTimer()
+    this.clearGraceTimer()
     // 清掉重连参数：用户手动点「连接」时才会重新发起（那时再抢回控制权是明确意图）
     this.lastOptions = null
     this.closeActive()
@@ -349,8 +484,8 @@ class ConnectionStore extends Store<ConnectionState> {
     if (this.reconnectTimer) return
     const delay = RECONNECT_DELAYS[this.reconnectAttempt]
     if (delay === undefined) {
-      // 退避次数用尽：停止重试，保持 link='closed'，由 UI 给「重新连接」
-      this.setState((s) => ({ ...s, reconnecting: undefined }))
+      // 退避次数用尽 → 回登录页（用户在那儿可重连或重新扫码）
+      this.giveUpReconnecting()
       return
     }
     const attempt = this.reconnectAttempt + 1
@@ -365,6 +500,33 @@ class ConnectionStore extends Store<ConnectionState> {
         if (!ok) this.scheduleReconnect()
       })
     }, delay)
+  }
+
+  /**
+   * 自动重连次数用尽 → 退回登录页。
+   *
+   * 为何不是「留在 chat 页给个重新连接按钮」：留在原地时界面还挂着会话与消息、
+   * 看上去「还在连着」，而实际上一个字节都发不出去 —— 那比退回去更容易让人误会。
+   * 回登录页 + 一句说明，至少用户知道现在该干什么。
+   *
+   * ⚠️ 这里**不动** `devicesStore`：配对凭证还在手机本地，重连不需要重新扫码。
+   */
+  private giveUpReconnecting(): void {
+    this.clearReconnectTimer()
+    this.clearGraceTimer()
+    // 不再自动重连：否则用户停在登录页也会被反复惊醒
+    this.lastOptions = null
+    this.reconnectAttempt = 0
+    this.closeActive()
+    chatStore.reset()
+    this.setState({
+      status: 'error',
+      capabilities: [],
+      link: 'closed',
+      reconnecting: undefined,
+      // `null` 传给它只是因为这条文案与具体错误无关（「重试次数用尽」本身就是一个结论）
+      error: { reason: 'dropped', message: describeError(null, 'dropped') },
+    })
   }
 
   private clearReconnectTimer(): void {
@@ -388,6 +550,8 @@ class ConnectionStore extends Store<ConnectionState> {
     this.offLink = null
     this.offError?.()
     this.offError = null
+    // 链路观测同步作废：上一条链路的候选对 / 计数 / 安静时长都不得留在新链路的视图里
+    linkStore.detach()
     if (active) {
       active.endpoint.dispose()
       active.transport.close()
@@ -457,6 +621,8 @@ function describeError(err: unknown, reason: ConnectErrorReason): string {
       return '协议版本不匹配，请升级客户端'
     case 'replaced':
       return '该电脑已被另一台手机接管连接'
+    case 'dropped':
+      return '与电脑的通讯已中断，自动重连 3 次仍未恢复。可以点「连接」重试，或重新扫码配对。'
     case 'expired':
       return '授权凭证已过期（最长 90 天），请在电脑上重新扫码配对'
     case 'revoked':

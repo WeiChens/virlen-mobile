@@ -38,6 +38,35 @@ export interface CreateTransportOptions {
    * （局域网可用）—— 不再有「偷偷用某个内置服务器」这回事。
    */
   iceServers?: IceServerInit[]
+  /**
+   * 观测钩子：RTC 链路建好 `RTCPeerConnection` 时回调（通讯状态面板据此读 `getStats()`）。
+   *
+   * 为什么能这么干：共享包把 `createPeerConnection` 特意留成了注入点（它自己测试也用），
+   * 于是「到底走了 P2P 还是 TURN 中继」这种**只存在于本机候选对里**的事实，
+   * 本端不必 fork 共享包就能读到（协议表里那个 `host.event.connection.changed`
+   * 目前电脑端并不发，指望不上）。
+   *
+   * 不传 = 用共享包的默认工厂，连接行为完全一样（没有任何分支依赖它）。
+   */
+  onPeerConnection?: (pc: RTCPeerConnection) => void
+}
+
+/**
+ * 造一个「造完就交出去」的 `RTCPeerConnection` 工厂。
+ *
+ * 与共享包默认工厂的区别**只有一处**：把实例交给观测钩子。因此这里的“环境有没有 RTCPeerConnection”
+ * 检查必须与它同义 —— 少了它，本路径会从「一句明确的错误」退化成 `ReferenceError`（报错位置也更远）。
+ */
+function tracedFactory(onPeerConnection: (pc: RTCPeerConnection) => void) {
+  return (config: RTCConfiguration): RTCPeerConnection => {
+    const Ctor = (
+      globalThis as { RTCPeerConnection?: new (c: RTCConfiguration) => RTCPeerConnection }
+    ).RTCPeerConnection
+    if (!Ctor) throw new Error('当前环境没有 RTCPeerConnection，无法建立 RTC 链路')
+    const pc = new Ctor(config)
+    onPeerConnection(pc)
+    return pc
+  }
 }
 
 /** 依据是否给出信令基址选择链路。 */
@@ -67,7 +96,15 @@ export function createTransport(options: CreateTransportOptions): Transport {
        */
       requireHostOnline: true,
     })
-    return new RtcTransport({ role: 'guest', signaling, iceServers: options.iceServers ?? [] })
+    return new RtcTransport({
+      role: 'guest',
+      signaling,
+      iceServers: options.iceServers ?? [],
+      // 只在有观测钩子时才换工厂：没钩子就用共享包的原样（少一处本端可出错的地方）
+      ...(options.onPeerConnection
+        ? { createPeerConnection: tracedFactory(options.onPeerConnection) }
+        : {}),
+    })
   }
   return createBroadcastTransport(options.hostId)
 }

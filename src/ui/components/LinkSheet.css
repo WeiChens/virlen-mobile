@@ -1,0 +1,74 @@
+/* LinkSheet —— 通讯状态面板（与 SessionInfoSheet 同形，共用 .sheet* 外壳样式）
+   颜色口径与顶栏那枚信号图标完全一致：绿=直连、黄=中继、橙=正在恢复、红=已断、灰=未知。 */
+
+/* ── 第一眼的状态行：一个圆点 + 一句结论 ── */
+.link__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #2c2c34;
+  border-radius: 10px;
+  background: #1a1a1e;
+  font-size: 14px;
+  font-weight: 500;
+}
+.link__state-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.link__state--good {
+  color: #7fd8a0;
+  border-color: #2b4436;
+  background: #16241c;
+}
+.link__state--relay {
+  color: #ffd98a;
+  border-color: #4a3a14;
+  background: #2c2513;
+}
+.link__state--warn {
+  color: #ffb066;
+  border-color: #4a3520;
+  background: #2c2015;
+}
+.link__state--down {
+  color: #ff9a9a;
+  border-color: #4a2626;
+  background: #2c1717;
+}
+.link__state--plain {
+  color: #cfcfd6;
+}
+.link__state-text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* ── 行右侧的值（左侧标签沿用 .sheet__row-label）── */
+.link__value {
+  flex: none;
+  max-width: 62%;
+  text-align: right;
+  font-size: 12.5px;
+  color: #d7d7de;
+  word-break: break-word;
+}
+.link__value--warn {
+  color: #ffd98a;
+}
+
+/* ── 底部动作 ── */
+.link__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── 告警文案（`sheet__hint` 是共用的次要说明样式，这里只换颜色）── */
+.link__warn {
+  color: #ffd98a;
+}

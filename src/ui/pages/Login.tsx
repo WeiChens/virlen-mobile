@@ -9,7 +9,13 @@ import {
   type PairingPayload,
 } from 'virlen-remote'
 import { connectionStore, type ConnectErrorReason } from '../../store/connection'
-import { devicesStore, grantStateOf, type PairedDevice } from '../../store/devices'
+import {
+  MAX_DEVICE_NAME_LEN,
+  deviceLabel,
+  devicesStore,
+  grantStateOf,
+  type PairedDevice,
+} from '../../store/devices'
 import { customIceText, resolveIceFor, saveCustomIce } from '../../api/ice'
 import './Login.css'
 
@@ -38,9 +44,29 @@ function formatTime(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/**
+ * 「连到哪台电脑」的附带参数。
+ *
+ * 字段名与 `ConnectOptions` 同名同义，但不直接透传整个 `ConnectOptions` ——
+ * 里面的 `transport` / `mode` 是测试与重连的内部开关，不该由页面决定。
+ */
+interface ConnectTarget {
+  signalUrl?: string
+  room?: string
+  /** 现场配对（手上是一次性票据）：电脑端要等用户点确认，握手超时给到 1 分钟。 */
+  pairing?: boolean
+}
+
 /** 连到指定电脑（`token` = 授权凭证；扫码时是一次性票据）。 */
-function connectTo(hostKey: string, name: string, token: string, signalUrl?: string, room?: string) {
-  void connectionStore.connect({ hostId: hostKey, deviceName: name, token, signalUrl, room })
+function connectTo(hostKey: string, name: string, token: string, target: ConnectTarget = {}) {
+  void connectionStore.connect({
+    hostId: hostKey,
+    deviceName: name,
+    token,
+    signalUrl: target.signalUrl,
+    room: target.room,
+    pairing: target.pairing,
+  })
 }
 
 export default function Login() {
@@ -91,7 +117,12 @@ export default function Login() {
       setParseError('无法识别该二维码（不是 Virlen 配对码）')
       return
     }
-    connectTo(payload.host, payload.name, payload.ticket, payload.signal, payload.room)
+    // 手上是**一次性票据**：电脑端会弹窗等用户点确认，这一步可能停在几十秒
+    connectTo(payload.host, payload.name, payload.ticket, {
+      signalUrl: payload.signal,
+      room: payload.room,
+      pairing: true,
+    })
   }
 
   const handleManual = () => {
@@ -101,7 +132,12 @@ export default function Login() {
       return
     }
     setManual('')
-    connectTo(payload.host, payload.name, payload.ticket, payload.signal, payload.room)
+    // 与扫码同一条路径（同是票据，同样要等电脑端确认）
+    connectTo(payload.host, payload.name, payload.ticket, {
+      signalUrl: payload.signal,
+      room: payload.room,
+      pairing: true,
+    })
   }
 
   /**
@@ -153,11 +189,13 @@ export default function Login() {
           <strong>
             {reason === 'replaced'
               ? '连接已被接管'
-              : needRescan
-                ? '需要重新扫码'
-                : reason === 'denied'
-                  ? '连接被拒绝'
-                  : '无法连接'}
+              : reason === 'dropped'
+                ? '通讯已中断'
+                : needRescan
+                  ? '需要重新扫码'
+                  : reason === 'denied'
+                    ? '连接被拒绝'
+                    : '无法连接'}
           </strong>
           <span>{conn.error.message}</span>
         </div>
@@ -185,7 +223,11 @@ export default function Login() {
             device={d}
             busy={busy}
             online={online.get(d.hostKey)}
-            onConnect={() => connectTo(d.hostKey, d.name, d.grant, d.signalUrl, d.room)}
+            onConnect={() =>
+              // 已配对设备：手上是**长期凭证**，电脑端立刻应答 —— 不带 `pairing`，保持 4 秒快失败
+              // 名字用 `deviceLabel`（本地改的名字优先）：连接中的提示也应该是自己起的名字
+              connectTo(d.hostKey, deviceLabel(d), d.grant, { signalUrl: d.signalUrl, room: d.room })
+            }
             onRemove={() => devicesStore.remove(d.hostKey)}
           />
         ))}
@@ -247,7 +289,7 @@ export default function Login() {
   )
 }
 
-/** 一台已配对电脑：名字 · 在线状态 · 凭证有效期 · 上次连接。 */
+/** 一台已配对电脑：名字 · 在线状态 · 凭证有效期 · 上次连接；行内可改名。 */
 function DeviceRow({
   device,
   busy,
@@ -264,11 +306,65 @@ function DeviceRow({
   const state = grantStateOf(device)
   const expired = state === 'expired'
   const onlineText = online === undefined ? '状态未知' : online ? '电脑在线' : '电脑不在线'
+  const label = deviceLabel(device)
+
+  /*
+   * 改名做成**行内编辑**而不是 `window.prompt`：PWA 里 prompt 的文案样式不可控、
+   * 在部分 iOS 内嵌浏览器里还会被拦（返回 null）—— 一个「点了没反应」的按钮
+   * 比没有这个功能更糟。
+   */
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const startEdit = () => {
+    // 预填**当前显示的名字**（不是原名）：最常见的改法是「在『客厅主机』上再修两个字」
+    setDraft(label)
+    setEditing(true)
+  }
+  const commit = () => {
+    // 归一化（trim / 截断 / 空等于恢复原名）全在 store 里，这里不重复一份判据
+    devicesStore.rename(device.hostKey, draft)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="device device--editing">
+        <input
+          className="device__input"
+          value={draft}
+          autoFocus
+          maxLength={MAX_DEVICE_NAME_LEN}
+          placeholder={device.name}
+          aria-label="给这台电脑起的名字"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // 手机软键盘的回车＝保存；Esc 只有带键盘的浏览器给得到
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+        />
+        <div className="device__actions">
+          <button type="button" className="btn btn--small" onClick={commit}>
+            保存
+          </button>
+          <button type="button" className="btn btn--small btn--ghost" onClick={() => setEditing(false)}>
+            取消
+          </button>
+        </div>
+        <p className="login__tip">
+          留空 = 用电脑自己的名字（{device.name}）。名字只存在这台手机上，电脑那边不变。
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="device">
       <div className="device__info">
-        <span className="device__name">{device.name}</span>
+        <span className="device__name">{label}</span>
+        {/* 改过名才显示原名：没改过时「原名」与上面那行逐字相同，只是噪音 */}
+        {device.alias && <span className="device__meta">原名 {device.name}</span>}
         <span className={`device__meta${online ? ' device__meta--online' : ''}`}>
           {onlineText} · 上次连接 {formatTime(device.lastConnectedAt)}
         </span>
@@ -277,13 +373,11 @@ function DeviceRow({
         </span>
       </div>
       <div className="device__actions">
-        <button
-          type="button"
-          className="btn btn--small"
-          disabled={busy || expired}
-          onClick={onConnect}
-        >
+        <button type="button" className="btn btn--small" disabled={busy || expired} onClick={onConnect}>
           {expired ? '需重新扫码' : '连接'}
+        </button>
+        <button type="button" className="btn btn--small btn--ghost" disabled={busy} onClick={startEdit}>
+          改名
         </button>
         <button type="button" className="btn btn--small btn--ghost" disabled={busy} onClick={onRemove}>
           删除

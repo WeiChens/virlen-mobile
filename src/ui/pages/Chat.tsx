@@ -3,7 +3,8 @@
  *
  * 布局（自上而下）：
  * 1. **顶栏**：设备名 + 状态（在线 / 工作中 / 压缩中 / 已暂停）、会话标题与模型 / 上下文摘要
- *    （点标题区 = 打开会话信息面板），右上角两个 iconbtn：新建对话、会话列表抽屉；
+ *    （点标题区 = 打开会话信息面板），右上角三个 iconbtn：通讯信号（点开通讯状态面板）、
+ *    新建对话、会话列表抽屉；
  * 2. 链路横幅 / 暂停横幅 / 待应答卡片 / 一次性提示；
  * 3. 消息区（工具气泡带工具名、空气泡不渲染、流式实时正文 + 思考占位）；
  * 4. 输入区（工作中变「停止」）。
@@ -20,14 +21,17 @@ import type { MessageDTO } from 'virlen-remote'
 import { useStore, useStoreSelector } from '../../lib/store'
 import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
+import { linkStore } from '../../store/link'
 import { baseNameOf } from '../../lib/session-groups'
 import { contextPercent, hasBody, pendingLabel, toolLabel, toolPreview } from '../../lib/messages'
+import { signalTone } from '../../lib/rtc-stats'
 import InteractionCard from '../../components/InteractionCard'
 import Markdown from '../../components/Markdown'
+import LinkSheet from '../components/LinkSheet'
 import NewChatPanel from '../components/NewChatPanel'
 import SessionDrawer from '../components/SessionDrawer'
 import SessionInfoSheet from '../components/SessionInfoSheet'
-import { IconList, IconPlus } from '../components/icons'
+import { IconList, IconPlus, IconSignal, IconSignalOff } from '../components/icons'
 import './Chat.css'
 
 /** 空消息窗口的**引用稳定**回退值（选择器不得每次新建数组，见 `useStoreSelector`）。 */
@@ -142,6 +146,7 @@ export default function Chat() {
   const [atBottom, setAtBottom] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   /** 前插更早消息时用于保持视口（记录「距底部距离」，渲染后还原）。 */
   const anchorRef = useRef<number | null>(null)
@@ -223,6 +228,26 @@ export default function Chat() {
       : paused
         ? '已暂停'
         : '在线'
+
+  /*
+   * 通讯信号的档位与口头描述。
+   *
+   * 只订阅 `path` 这个**原始值**：采样每 2 秒一跳，整店订阅（`useStore(linkStore)`）
+   * 会让整页聊天跟着每 2 秒重渲染一次（与 §29 的订阅纪律同一个道理）。
+   * 档位一律走 `signalTone()` —— 与通讯状态面板用的是同一份判定，免得图标与面板说法不一。
+   */
+  const linkPath = useStoreSelector(linkStore, (s) => s.path)
+  const tone = signalTone(conn.link, linkPath)
+  const signalTitle =
+    tone === 'good'
+      ? '通讯正常 · P2P 直连'
+      : tone === 'relay'
+        ? '通讯正常 · TURN 中继（较慢）'
+        : tone === 'warn'
+          ? '链路中断，正在尝试恢复'
+          : tone === 'down'
+            ? '链路已断开'
+            : '通讯状态未知'
 
   // 顶栏第二行摘要：会话 → 模型 / 上下文；新对话 → 草稿模型 / 草稿目录
   const percent = context ? contextPercent(context.tokens, context.windowTokens) : null
@@ -310,6 +335,19 @@ export default function Chat() {
           {metaParts.length > 0 && <span className="chat__meta">{metaParts.join(' · ')}</span>}
         </button>
         <div className="chat__head-actions">
+          {/*
+            通讯信号**一直在**右上角（不是只在断线时才冒出来）：「现在快不快、刚才是断过」
+            这类问题应该是抬眼就能看出来，而不是等到发消息超时才反向推断。
+          */}
+          <button
+            type="button"
+            className={`iconbtn iconbtn--signal iconbtn--signal-${tone}`}
+            title={signalTitle}
+            aria-label={signalTitle}
+            onClick={() => setLinkOpen(true)}
+          >
+            {tone === 'down' ? <IconSignalOff /> : <IconSignal />}
+          </button>
           {can('session.create') && (
             <button
               type="button"
@@ -491,6 +529,7 @@ export default function Chat() {
       {sheetOpen && currentId && (
         <SessionInfoSheet sessionId={currentId} onClose={() => setSheetOpen(false)} />
       )}
+      {linkOpen && <LinkSheet onClose={() => setLinkOpen(false)} />}
     </div>
   )
 }

@@ -10,6 +10,7 @@ import {
   triggerFocusOnce,
   type CameraSupport,
 } from '../lib/camera'
+import { CAPTURE_IDEAL, planScanRegions } from '../lib/scan-plan'
 import './QrScanner.css'
 
 interface Props {
@@ -22,19 +23,11 @@ interface Props {
  *
  * 全分辨率 `getImageData` + jsQR 单次约 20~40ms，**每帧都跑**（60fps）会让主线程饱和 →
  * 掉帧、手机发热，**反而降低识别率**。10fps 对扫码足够，把省下的预算用于「多区域尝试」。
+ *
+ * 每次解码的**像素预算**（中心区不缩放但封顶、全帧兜底等比缩到 1280×720 以内）由
+ * `lib/scan-plan.ts` 收口 —— 这里只管「多久扫一次」，不管「一次扫多少像素」。
  */
 const DECODE_INTERVAL_MS = 100
-
-/**
- * 优先扫描的中心区边长比例（相对视频帧的**短边**）。
- *
- * 为什么用「短边」而不是「宽高各一个比例」：`.scanner__frame` 是 **1:1 + `object-fit: cover`**，
- * 所以用户屏幕上看到的恰好是视频帧**居中的正方形**（边长 = 短边）。二者对齐，「把码放进取景框」
- * 才有实际意义（reticle 是 inset 15% 即中心 70%，这里取 0.8 略宽 —— 手抖/码稍偏也能扫到）。
- *
- * 面积只有全帧的 ~28%（1280×720 下），二值化与定位图案扫描都快得多；全帧作兜底。
- */
-const CENTER_CROP = 0.8
 
 /** 单次对焦（`single-shot`）设备的**重触发周期**：不重触发就会一直停在失焦状态。 */
 const REFOCUS_INTERVAL_MS = 1500
@@ -52,6 +45,10 @@ const SLOW_HINT_MS = 15000
  *
  * ⚠️ **对焦控制的能力边界见 `lib/camera.ts` 文件头**：点按对焦在 Web 上做不到，
  * iOS 更是全部不支持 —— 不支持时这里显示说明，**不给无效按钮**。
+ *
+ * ⚠️ **「对不上焦」多数时候其实是像素不够**：手机离屏幕太近会低于镜头最近对焦距离（必糊，
+ * 软件无解），而站远就要求码上有足够像素 —— 采集分辨率与解码像素预算见 `lib/scan-plan.ts`
+ * 文件头（那里是「改常量前先读」的地方）。
  */
 export default function QrScanner({ onResult, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -93,7 +90,7 @@ export default function QrScanner({ onResult, onCancel }: Props) {
       const vh = video.videoHeight
       if (!vw || !vh) return false
 
-      // canvas 尺寸固定为视频原始分辨率，靠 drawImage 的源矩形做裁剪 ——
+      // canvas 尺寸固定为视频原始分辨率，靠 drawImage 的源/目标矩形做「裁剪 + 缩放」——
       // 避免每帧改 canvas 尺寸（会重置画布状态，有成本）
       if (canvas.width !== vw || canvas.height !== vh) {
         canvas.width = vw
@@ -102,17 +99,11 @@ export default function QrScanner({ onResult, onCancel }: Props) {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return false
 
-      const side = Math.round(Math.min(vw, vh) * CENTER_CROP)
-      const regions: Array<[number, number, number, number]> = [
-        [Math.round((vw - side) / 2), Math.round((vh - side) / 2), side, side], // ① 中心（与取景框对齐）
-        [0, 0, vw, vh], // ② 全帧兜底（覆盖码不在中心的情况）
-      ]
-
-      for (const [sx, sy, sw, sh] of regions) {
-        if (sw <= 0 || sh <= 0) continue
-        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh)
-        const image = ctx.getImageData(0, 0, sw, sh)
-        const code = jsQR(image.data, sw, sh, { inversionAttempts: 'dontInvert' })
+      // 区域与像素预算由 lib/scan-plan.ts 决定（中心优先 → 全帧兜底）
+      for (const { sx, sy, sw, sh, dw, dh } of planScanRegions(vw, vh)) {
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, dw, dh)
+        const image = ctx.getImageData(0, 0, dw, dh)
+        const code = jsQR(image.data, dw, dh, { inversionAttempts: 'dontInvert' })
         if (code && code.data) {
           doneRef.current = true
           onResultRef.current(code.data)
@@ -150,8 +141,9 @@ export default function QrScanner({ onResult, onCancel }: Props) {
             // ideal 而非 exact：不支持的机型会自行降级，不会直接失败。
             // 提高采集分辨率是有意义的 —— 默认可能只有 640×480，远处的码**像素本身就不够**，
             // 那种情况下「解不出」与对焦无关，是分辨率问题。
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            // ⚠️ 720p → 1080p 是「能站多远」的关键：离屏幕太近会低于镜头最近对焦距离（必糊，
+            //    软件无解），而拉远就要求码上有足够像素。理由与像素预算见 lib/scan-plan.ts。
+            ...CAPTURE_IDEAL,
           },
         })
         if (cancelled) {
@@ -292,7 +284,8 @@ export default function QrScanner({ onResult, onCancel }: Props) {
 
           {slow && (
             <p className="scanner__notice">
-              还扫不到？① 距离拉到 20~30 厘米；② 稍微斜一点拍屏幕（正对易产生摩尔纹与反光）；
+              还扫不到？① 先拉到 25~35 厘米 —— 凑太近会低于镜头最近对焦距离（那种糊任何软件都无解），
+              而现在按 1080p 采集，拉远后码上仍够像素；② 稍微斜一点拍屏幕（正对易产生摩尔纹与反光）；
               ③ 或直接用下方「手动输入配对串」。
             </p>
           )}

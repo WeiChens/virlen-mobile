@@ -1,7 +1,7 @@
 /**
  * 手机端图标 —— 内联 SVG，**不引图标库**。
  *
- * 为什么不引库：整个手机端是 PWA，包体直接等于首屏时间；而这里只需要 6 个图标。
+ * 为什么不引库：整个手机端是 PWA，包体直接等于首屏时间；而这里只需要几个图标。
  * 统一 20×20 视口、`currentColor` 描边（颜色由 CSS 控制，跟随按钮状态）。
  */
 import type { SVGProps } from 'react'
@@ -97,6 +97,30 @@ export function IconGauge(props: SVGProps<SVGSVGElement>) {
     <Svg {...props}>
       <path d="M4 18a8 8 0 1 1 16 0" />
       <path d="M12 18l4-5" />
+    </Svg>
+  )
+}
+
+/**
+ * 通讯信号（信号格）——通讯状态面板的入口。
+ *
+ * 画成递升的四格而不是「一堆波浪」：格数/颜色能直接表达强弱，
+ * 而颜色由外层按钮的 `.iconbtn--*` 类控制（图标本身只认 `currentColor`）。
+ */
+export function IconSignal(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M4 20v-3M9.3 20v-7M14.7 20v-11M20 20V6" />
+    </Svg>
+  )
+}
+
+/** 通讯信号中断（同一组信号格 + 一道斜杠）——「断了」要比「弱」一眼可辨。 */
+export function IconSignalOff(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M4 20v-3M9.3 20v-7M14.7 20v-11M20 20V6" />
+      <path d="M3 4l18 16" />
     </Svg>
   )
 }
