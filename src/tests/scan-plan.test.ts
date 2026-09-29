@@ -9,7 +9,6 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  CAPTURE_IDEAL,
   CENTER_CROP,
   MAX_CENTER_SIDE,
   MAX_FULL_SIDE,
@@ -20,7 +19,7 @@ import {
 /** 各种机型真实会给到的帧尺寸（含竖屏、4K、低端机、退化值）。 */
 const FRAME_SIZES: Array<[number, number]> = [
   [1280, 720], // 旧实现请求到的（对比基准）
-  [1920, 1080], // 现在的请求值
+  [1920, 1080], // 16:9（部分机型唯一的高分模式）
   [1080, 1920], // 竖屏手机（多数机型上报的是传感器方向）
   [3840, 2160], // 问 1080p 给了 4K
   [640, 480], // 低端机 / 降级
@@ -28,14 +27,6 @@ const FRAME_SIZES: Array<[number, number]> = [
   [100, 1000], // 长条比例（防御性：竖屏裁切异常时出现）
   [1, 1], // 退化：中心区与全帧重合
 ]
-
-describe('CAPTURE_IDEAL —— 采集像素预算（决定「拉远到多远还能扫到」）', () => {
-  it('不低于 1080p：这是「站远一点仍然有足够像素」的物理前提', () => {
-    expect(CAPTURE_IDEAL.width * CAPTURE_IDEAL.height).toBeGreaterThanOrEqual(1920 * 1080)
-    // 相对旧值 720p 的像素倍数（用户能站多远的线性倍数 ≈ 其平方根）
-    expect((CAPTURE_IDEAL.width * CAPTURE_IDEAL.height) / (1280 * 720)).toBeCloseTo(2.25, 2)
-  })
-})
 
 describe('planScanRegions —— 中心优先、全帧兜底', () => {
   it('1080p 横屏：中心 864²（不缩放），兜底等比缩成 1280×720', () => {

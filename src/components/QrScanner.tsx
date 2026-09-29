@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import jsQR from 'jsqr'
 import {
   clampZoom,
-  enableBestFocus,
   getZoom,
   probeCameraSupport,
   setTorch,
@@ -10,7 +9,7 @@ import {
   triggerFocusOnce,
   type CameraSupport,
 } from '../lib/camera'
-import { CAPTURE_IDEAL, planScanRegions } from '../lib/scan-plan'
+import { planScanRegions } from '../lib/scan-plan'
 import './QrScanner.css'
 
 interface Props {
@@ -29,9 +28,6 @@ interface Props {
  */
 const DECODE_INTERVAL_MS = 100
 
-/** 单次对焦（`single-shot`）设备的**重触发周期**：不重触发就会一直停在失焦状态。 */
-const REFOCUS_INTERVAL_MS = 1500
-
 /** 长时间识别不出 → 给出「物理层」建议（多数扫码失败与软件无关，见 `scanner__notice`）。 */
 const SLOW_HINT_MS = 15000
 
@@ -47,8 +43,8 @@ const SLOW_HINT_MS = 15000
  * iOS 更是全部不支持 —— 不支持时这里显示说明，**不给无效按钮**。
  *
  * ⚠️ **「对不上焦」多数时候其实是像素不够**：手机离屏幕太近会低于镜头最近对焦距离（必糊，
- * 软件无解），而站远就要求码上有足够像素 —— 采集分辨率与解码像素预算见 `lib/scan-plan.ts`
- * 文件头（那里是「改常量前先读」的地方）。
+ * 软件无解），而站远又要求码上有足够像素 —— 解码的像素预算见 `lib/scan-plan.ts` 文件头
+ * （那里是「改常量前先读」的地方）。
  */
 export default function QrScanner({ onResult, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -81,7 +77,6 @@ export default function QrScanner({ onResult, onCancel }: Props) {
     let raf = 0
     let cancelled = false
     let lastDecode = 0
-    let focusTimer: ReturnType<typeof setInterval> | null = null
     let slowTimer: ReturnType<typeof setTimeout> | null = null
 
     /**
@@ -144,17 +139,27 @@ export default function QrScanner({ onResult, onCancel }: Props) {
         return
       }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            // ideal 而非 exact：不支持的机型会自行降级，不会直接失败。
-            // 提高采集分辨率是有意义的 —— 默认可能只有 640×480，远处的码**像素本身就不够**，
-            // 那种情况下「解不出」与对焦无关，是分辨率问题。
-            // ⚠️ 720p → 1080p 是「能站多远」的关键：离屏幕太近会低于镜头最近对焦距离（必糊，
-            //    软件无解），而拉远就要求码上有足够像素。理由与像素预算见 lib/scan-plan.ts。
-            ...CAPTURE_IDEAL,
-          },
-        })
+        // ── 与 demo 一致的取流方式（对齐后才不再「放大」）─────────────────────
+        // ① 枚举摄像头，取**最后一路**：demo 就是把它当后置主摄（真机取景正常）。
+        //    用 `deviceId` 明确指定，而非 `facingMode`：多摄机型上 `facingMode:'environment'`
+        //    可能选到非主摄（视野不同 → 观感「放大」）。
+        // ② **不指定 width/height**：请求 1920×1080（16:9）会被 4:3 传感器上下裁切 → 视野变窄。
+        // ③ **不做任何 `applyConstraints`**：demo 什么都没设，对焦交给系统就是完美的；
+        //    强制 `focusMode` 在部分机型上会改变镜头 / 裁切（真机反馈的「放大」即来自此）。
+        let cameras: MediaDeviceInfo[] = []
+        try {
+          cameras = (await navigator.mediaDevices.enumerateDevices()).filter(
+            (d) => d.kind === 'videoinput' && d.deviceId,
+          )
+        } catch {
+          cameras = []
+        }
+        const rear = cameras.length ? cameras[cameras.length - 1] : null
+        const videoConstraints: MediaTrackConstraints = rear
+          ? { deviceId: { exact: rear.deviceId } }
+          : { facingMode: { ideal: 'environment' } }
+
+        stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints })
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop())
           return
@@ -165,19 +170,10 @@ export default function QrScanner({ onResult, onCancel }: Props) {
         await video.play()
         if (cancelled) return
 
-        // ② 摄像头调优：尽力打开自动对焦 / 探明变焦补光能力（不支持时全部降级，不抛错）
+        // 只探明能力（供手动工具条用）；**不主动设对焦**，避免改变取景。
         const track = stream.getVideoTracks()[0] ?? null
         trackRef.current = track
-        const caps = probeCameraSupport(track)
-        setSupport(caps)
-        const mode = await enableBestFocus(track, caps)
-        if (cancelled) return
-        if (mode === 'single-shot') {
-          // 单次对焦只在对焦那一刻有效：周期性重触发，模拟「持续对焦」
-          focusTimer = setInterval(() => {
-            void triggerFocusOnce(track, caps)
-          }, REFOCUS_INTERVAL_MS)
-        }
+        setSupport(probeCameraSupport(track))
         const z = getZoom(track)
         if (z !== null) setZoomValue(z)
 
@@ -195,7 +191,6 @@ export default function QrScanner({ onResult, onCancel }: Props) {
     return () => {
       cancelled = true
       if (raf) cancelAnimationFrame(raf)
-      if (focusTimer) clearInterval(focusTimer)
       if (slowTimer) clearTimeout(slowTimer)
       if (stream) stream.getTracks().forEach((t) => t.stop())
     }
@@ -295,7 +290,7 @@ export default function QrScanner({ onResult, onCancel }: Props) {
           {slow && (
             <p className="scanner__notice">
               还扫不到？① 先拉到 25~35 厘米 —— 凑太近会低于镜头最近对焦距离（那种糊任何软件都无解），
-              而现在按 1080p 采集，拉远后码上仍够像素；② 稍微斜一点拍屏幕（正对易产生摩尔纹与反光）；
+              拉远后让二维码尽量充满取景框；② 稍微斜一点拍屏幕（正对易产生摩尔纹与反光）；
               ③ 或直接用下方「手动输入配对串」。
             </p>
           )}
