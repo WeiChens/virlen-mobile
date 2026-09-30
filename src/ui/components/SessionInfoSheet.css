@@ -2,7 +2,7 @@
 .sheet__backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--backdrop);
   z-index: 20;
 }
 .sheet {
@@ -14,11 +14,13 @@
   max-height: 82vh;
   display: flex;
   flex-direction: column;
-  background: #16161b;
-  border-top: 1px solid #2c2c34;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
   border-radius: 16px 16px 0 0;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 -8px 24px var(--shadow);
   animation: sheet-in 0.16s ease-out;
+  /* Home Indicator 压在面板最后一行上：面板本身让出这一条 */
+  padding-bottom: var(--safe-bottom);
 }
 @keyframes sheet-in {
   from {
@@ -33,19 +35,19 @@
   padding: 12px 14px 8px;
 }
 .sheet__title {
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
   font-weight: 600;
 }
 .sheet__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: calc(32px * var(--fs));
+  height: calc(32px * var(--fs));
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #9a9aa4;
+  color: var(--fg-muted);
   cursor: pointer;
 }
 .sheet__body {
@@ -60,8 +62,8 @@
 }
 .sheet__session-title {
   margin: 0;
-  font-size: 14px;
-  color: #ececf1;
+  font-size: calc(14px * var(--fs));
+  color: var(--fg);
   word-break: break-word;
 }
 .sheet__actions {
@@ -76,9 +78,9 @@
 }
 .sheet__block-title {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   font-weight: 500;
-  color: #8a8a94;
+  color: var(--fg-dim);
 }
 .sheet__row {
   display: flex;
@@ -86,13 +88,13 @@
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  border: 1px solid #2c2c34;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #1a1a1e;
-  color: #d7d7de;
+  background: var(--bg-card);
+  color: var(--fg-2);
   padding: 9px 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
   text-align: left;
 }
 .sheet__row--button {
@@ -111,35 +113,35 @@
 }
 .sheet__row-label--mono {
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
 }
 .sheet__row-sub {
-  font-size: 11px;
-  color: #7c7c86;
+  font-size: calc(11px * var(--fs));
+  color: var(--fg-faint);
 }
 .sheet__row-hint {
   flex: none;
-  color: #7ea2ff;
-  font-size: 12px;
+  color: var(--accent-text);
+  font-size: calc(12px * var(--fs));
 }
 .sheet__hint {
   margin: 0;
-  font-size: 12px;
-  color: #7c7c86;
+  font-size: calc(12px * var(--fs));
+  color: var(--fg-faint);
   line-height: 1.5;
 }
 .sheet__bar {
   height: 6px;
   border-radius: 999px;
-  background: #26262c;
+  background: var(--line);
   overflow: hidden;
 }
 .sheet__bar-fill {
   display: block;
   height: 100%;
-  background: #4f7cff;
+  background: var(--accent);
   transition: width 0.2s ease-out;
 }
 .sheet__bar-fill.is-critical {
-  background: #ef4444;
+  background: var(--danger-strong);
 }

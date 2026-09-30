@@ -16,6 +16,9 @@ interface State {
  * 「全黑、什么都没有」——极难排查。这里把它拦下来，**把错误原文直接显示在屏幕上**。
  *
  * 注意：只捕获**渲染 / 生命周期同步**异常；异步 Promise 拒绝仍需各自 `.catch`。
+ *
+ * 颜色走 `theme.css` 的令牌（`var(--…)`）：出错屏也要跟随深浅主题，
+ * 否则浅色下「深色错误页」会显得像另一个应用。
  */
 export default class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null }
@@ -38,22 +41,22 @@ export default class ErrorBoundary extends Component<Props, State> {
           position: 'fixed',
           inset: 0,
           padding: '24px',
-          background: '#0f0f10',
-          color: '#ececf1',
+          background: 'var(--bg)',
+          color: 'var(--fg)',
           overflow: 'auto',
-          font: "14px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif",
+          font: "calc(14px * var(--fs))/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif",
         }}
       >
-        <h2 style={{ color: '#ff9d9d', marginTop: 0 }}>页面出错了</h2>
-        <p style={{ color: '#9a9aa5' }}>请把下面的信息反馈给开发者（手机上看不到调试面板，故直接展示）：</p>
+        <h2 style={{ color: 'var(--danger)', marginTop: 0 }}>页面出错了</h2>
+        <p style={{ color: 'var(--fg-muted)' }}>请把下面的信息反馈给开发者（手机上看不到调试面板，故直接展示）：</p>
         <pre
           style={{
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
-            background: '#17171b',
+            background: 'var(--bg-error)',
             padding: '12px',
             borderRadius: '10px',
-            border: '1px solid #2a2a31',
+            border: '1px solid var(--border)',
           }}
         >
           {error.name}: {error.message}
@@ -66,9 +69,9 @@ export default class ErrorBoundary extends Component<Props, State> {
             marginTop: '12px',
             padding: '8px 16px',
             borderRadius: '10px',
-            border: '1px solid #3a3a44',
-            background: '#232329',
-            color: '#ececf1',
+            border: '1px solid var(--border-3)',
+            background: 'var(--bg-btn)',
+            color: 'var(--fg)',
             font: 'inherit',
           }}
         >

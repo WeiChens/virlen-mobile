@@ -1,0 +1,240 @@
+/**
+ * 主题令牌（**深 / 浅两套**）与界面字号缩放（`--fs`）。
+ *
+ * 为什么要有这个文件：手机端原本是「深色写死」—— 每个 CSS 文件里散落着 80 种硬编码颜色。
+ * 加主题不能靠再写一份 `light.css` 覆盖（两份样式迟早漂移，改一处忘一处），只能先把颜色
+ * **收成语义令牌**：组件只写「用哪一类颜色」，由 `:root[data-theme]` 决定具体色值。
+ *
+ * ## 令牌命名（按**角色**，不按颜色本身）
+ *
+ * - `--bg*`：底色层。`--bg` 页面底 → `--bg-raised` 抬起一层（抽屉 / 面板 / 代码块）
+ *   → `--bg-card` 卡片（行 / 输入框 / 气泡）→ `--bg-hover` 按下 / 悬停。
+ *   「sunken / code / inline」是**比底色更低**的凹陷层（候选列表 / 命令输出 / 行内代码）。
+ * - `--line` / `--border-*`：描边，从最细的分隔线到最重的卡片描边，一级一个令牌。
+ * - `--fg*`：文字，从主文字 `--fg` 到最淡的 `--fg-ghost`（越淡越不该被看见）。
+ * - `--accent*`：品牌蓝（选中态 / 链接 / 进度）。
+ * - `--ok` / `--warn` / `--orange` / `--danger`：状态色（都是**成组**的：文字 + 底 + 描边，
+ *   因为界面上它们永远三个一起出现，拆开用迟早配错）。
+ *
+ * 深色那一列的取值**就是改造前各处的原值**，所以深色外观与改造前逐像素一致（唯一的例外是
+ * 下面「近似色合并」里那几对，差 1–3 个色阶，肉眼不可辨）。
+ *
+ * ## 近似色合并（有意为之）
+ *
+ * 原代码里有几对「同一个意思、色值差一点点」的颜色，一并收进同一个令牌
+ * （否则令牌表会翻倍，而差异在手机屏上根本看不出来）：
+ * `#1a1a1e`/`#1a1a20`、`#9a9aa4`/`#9a9aa5`、`#3a3a42`/`#3a3a44`、`#2a2a31`/`#2c2c34`、
+ * `#101014`/`#111116`、`#ff9d9d`/`#ff9a9a`、`#2a2a30`/`#232329`、
+ * `#3a2f14`/`#2a2213`/`#2c2513`、`#2c2015`/`#221c15`、`#2c1717`/`#3a1a1c`/`#4a2a2c`。
+ *
+ * ## 两处**故意不跟随主题**
+ *
+ * - `components/QrScanner.css`：全屏相机取景页 —— 画面来自摄像头，底下永远需要黑底白字，
+ *   换浅色只会让「取景框 / 提示」在亮画面上糊掉；
+ * - `.caret` / `.dots` 之类纯装饰的强调色走 `--accent*`，两套主题各自取一支能看清的蓝。
+ *
+ * ## 浅色不是「把深色反相」
+ *
+ * 浅色下**不能**靠加深底色来表示「抬起」：白底上的层次靠**描边 + 极浅的灰**，而
+ * 强调 / 状态色必须整体压暗（`#7fd8a0` 这种亮绿在白底上等于看不见），所以浅色列的
+ * `--ok`/`--warn`/`--danger` 都是同一色相的深色版本。
+ */
+
+:root {
+  /* `color-scheme` 决定浏览器原生控件（滚动条 / 输入框光标 / 下拉）的配色，必须跟着主题走 */
+  color-scheme: dark;
+
+  /* ── 底色层 ── */
+  --bg: #0f0f10;
+  --bg-raised: #16161b;
+  --bg-card: #1a1a1e;
+  --bg-panel: #1c1c22;
+  --bg-bubble: #1f1f25;
+  --bg-input: #202027;
+  --bg-press: #202027;
+  --bg-hover: #26262e;
+  --bg-sunken: #121216;
+  --bg-code: #101014;
+  --bg-inline: #23232a;
+  --bg-th: #1e1e24;
+  --bg-error: #17171b;
+  --bg-btn: #2a2a30;
+
+  /* ── 描边 ── */
+  --line: #26262c;
+  --border: #2c2c34;
+  --border-2: #33333a;
+  --border-3: #3a3a44;
+  --border-4: #4a4a55;
+
+  /* ── 文字 ── */
+  --fg: #ececf1;
+  --fg-2: #d7d7de;
+  --fg-3: #cfcfd6;
+  --fg-4: #b9b9c3;
+  --fg-muted: #9a9aa5;
+  --fg-dim: #8a8a94;
+  --fg-faint: #7c7c86;
+  --fg-ghost: #6f6f78;
+
+  /* ── 品牌蓝（选中 / 链接 / 进度）── */
+  --accent: #4f7cff;
+  --accent-fg: #fff;
+  --accent-text: #7ea2ff;
+  --accent-bg: #1b2440;
+  --accent-bg-2: #22305a;
+  --accent-bg-soft: #171c2c;
+  --accent-border: #3a4a7a;
+  --info: #9fb6ff;
+  /* 品牌蓝底上的文字（深色下白字；浅色下的浅蓝底上必须是深蓝字） */
+  --on-accent-bg: #fff;
+
+  /* ── 状态色：正常 / 注意 / 高风险 / 危险（文字 + 底 + 描边成组出现）── */
+  --ok: #7fd8a0;
+  --ok-2: #4ec9a5;
+  --ok-border: #2b4436;
+  --ok-bg: #16241c;
+
+  --warn: #ffd98a;
+  --warn-2: #e0a35c;
+  --warn-border: #4a3a14;
+  --warn-bg: #3a2f14;
+
+  --orange: #ffb066;
+  --orange-2: #d19a66;
+  --orange-border: #4a3520;
+  --orange-bg: #2c2015;
+  --orange-fg-on: #201709;
+
+  --danger: #ff9d9d;
+  --danger-border: #4a2626;
+  --danger-border-2: #6a3a3c;
+  --danger-bg: #3a1a1c;
+  --danger-strong: #ef4444;
+
+  /* ── 其它 ── */
+  --backdrop: rgba(0, 0, 0, 0.5);
+  --shadow: rgba(0, 0, 0, 0.45);
+  --track: #555;
+
+  /* ── 界面字号缩放：1 = 「中」 ── */
+  --fs: 1;
+
+  /*
+   * ── 安全区域（刘海 / 灵动岛 / Home Indicator）──
+   *
+   * `index.html` 的 viewport 带 `viewport-fit=cover`：页面铺满整屏，**内容必须自己
+   * 躲开**系统那一圈。否则 PWA 独立窗口下顶栏会被状态栏压住、输入框会被 Home Indicator
+   * 盖住（真机上「按钮点不到」往往就是它）。
+   *
+   * 这里只做一次映射：各处写 `calc(原 padding + var(--safe-top))` 就行，不必让每个文件
+   * 都去记 `env(safe-area-inset-*)` 的拼写。
+   *
+   * ⚠️ **先写 `0px`、再写 `env()`**：不认 `env()` 的浏览器会把第二条当成无效声明丢掉、
+   * 保留第一条；否则 `var()` 失效会连带把整条 `padding` 声明弄成无效 —— 那意味着**内边距
+   * 直接变 0**（页面贴边），而不仅仅是没有安全区域。
+   */
+  --safe-top: 0px;
+  --safe-right: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/*
+ * 浅色。除色值外**不动任何布局**：深浅两套的间距 / 圆角 / 层级完全一致，
+ * 否则「切个主题版式就变了」——那是另一件事，不该搭车。
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f2f2f6;
+  --bg-raised: #ffffff;
+  --bg-card: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-bubble: #ffffff;
+  --bg-input: #eef0f5;
+  --bg-press: #e9e9f0;
+  --bg-hover: #e4e4ec;
+  --bg-sunken: #ebebf1;
+  --bg-code: #f1f1f6;
+  --bg-inline: #ececf3;
+  --bg-th: #f0f0f6;
+  --bg-error: #f7f7fb;
+  --bg-btn: #e7e7ee;
+
+  --line: #e6e6ee;
+  --border: #e0e0e8;
+  --border-2: #d8d8e1;
+  --border-3: #ceced8;
+  --border-4: #c2c2ce;
+
+  --fg: #15151b;
+  --fg-2: #2f2f38;
+  --fg-3: #3d3d47;
+  --fg-4: #54545e;
+  --fg-muted: #67676f;
+  --fg-dim: #73737c;
+  /* 浅色下的「最淡两级」比深色下的存在感强得多（同一份灰在白底上显得更轻），
+     所以要比「深色列的值直接搬过来」更深一点，否则提示文字在户外就看不清了 */
+  --fg-faint: #787881;
+  --fg-ghost: #86868f;
+
+  --accent: #2f62e6;
+  --accent-fg: #ffffff;
+  --accent-text: #2a5cd8;
+  --accent-bg: #e6edff;
+  --accent-bg-2: #d7e0ff;
+  --accent-bg-soft: #eef2ff;
+  --accent-border: #b9c8f6;
+  --info: #2a5cd8;
+  --on-accent-bg: #12356f;
+
+  --ok: #0f7a56;
+  --ok-2: #0c7355;
+  --ok-border: #a8d8bf;
+  --ok-bg: #e7f6ee;
+
+  --warn: #8a6100;
+  --warn-2: #9a5b00;
+  --warn-border: #e6cd92;
+  --warn-bg: #fdf3d6;
+
+  --orange: #b3531c;
+  --orange-2: #a5642a;
+  --orange-border: #e3b795;
+  --orange-bg: #fdeee3;
+  --orange-fg-on: #3b2200;
+
+  --danger: #b3261e;
+  --danger-border: #edb6b1;
+  --danger-border-2: #e7a9a3;
+  --danger-bg: #fdeceb;
+  --danger-strong: #d93a2b;
+
+  --backdrop: rgba(18, 18, 28, 0.35);
+  --shadow: rgba(20, 25, 45, 0.14);
+  --track: #c4c4cd;
+}
+
+/*
+ * 界面大小（小 / 中 / 大）—— 只缩放**字号**与**主要点击目标**的尺寸。
+ *
+ * 为什么不用 `zoom` 整体缩放：抽屉 / 底部面板 / 扫码页都是 `position: fixed` 的浮层，
+ * 而 `zoom` 作用在祖先元素上时，fixed 浮层的定位基准会一起被缩放（底部面板会跑到屏幕外）。
+ * 字号 + 点击目标缩放没有这个风险：**布局结构不变，内容自己重排**。
+ *
+ * ⚠️ 三档都**不能为 0**：`--fs` 参与 `calc()`，缺值是无效声明（字号直接回落成浏览器默认）。
+ */
+:root[data-size='s'] {
+  --fs: 0.92;
+}
+:root[data-size='m'] {
+  --fs: 1;
+}
+:root[data-size='l'] {
+  --fs: 1.12;
+}

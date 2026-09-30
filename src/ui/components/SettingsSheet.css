@@ -1,0 +1,68 @@
+/* SettingsSheet —— 外观设置（主题 / 界面大小）。
+   外壳复用 `.sheet*`（见 SessionInfoSheet.css，由组件 import）：手机上「从底部升起的一层」
+   只有一种形态，多一套壳只会让人多学一次。颜色一律走 theme.css 令牌。 */
+
+/* ── 三选一分段控件（主题 / 界面大小共用；两边都是「三选一」，不该长得不一样）── */
+.settings__seg {
+  display: flex;
+  gap: 6px;
+}
+.settings__seg-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--fg-2);
+  padding: 9px 6px;
+  min-height: calc(42px * var(--fs));
+  font: inherit;
+  font-size: calc(13px * var(--fs));
+  cursor: pointer;
+  /* 档位文字长度不一（「跟随系统」比「浅色」长得多），居中更稳 */
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+/*
+ * 界面大小三档前面的那个「A」：**越大的档 A 越大**。
+ *
+ * 用 `::before` 而不是 DOM 文本 —— 它是纯视觉示意，不该混进「按钮文案」。
+ * 尺寸写死（不乘 `--fs`）：它演示的正是「三档之间差多少」，若自己也跟着当前档位缩放，
+ * 反而看不出差别了。
+ */
+.settings__seg-item[data-opt]::before {
+  content: 'A';
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-dim);
+}
+.settings__seg-item[data-opt='s']::before {
+  font-size: 11px;
+}
+.settings__seg-item[data-opt='m']::before {
+  font-size: 14px;
+}
+.settings__seg-item[data-opt='l']::before {
+  font-size: 17px;
+}
+.settings__seg-item.is-on {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--on-accent-bg);
+  font-weight: 600;
+}
+.settings__seg-item.is-on[data-opt]::before {
+  color: var(--on-accent-bg);
+}
+
+/* ── 本机名称（报给电脑的那个名字）── */
+.settings__name {
+  font-size: calc(13px * var(--fs));
+  color: var(--fg-2);
+  word-break: break-word;
+}

@@ -1,3 +1,14 @@
+/**
+ * Login —— 登录 / 配对页（§22 改版）。
+ *
+ * 页面自上而下：品牌区（logo + 字标 + 设置入口）→ 错误 / 连接中横幅 → **已配对的电脑** →
+ * 「扫码添加电脑」（页面级唯一主动作）→ 手动粘贴配对串 → 高级设置（ICE）。
+ *
+ * 一条与旧版**故意不同**的取舍：
+ *
+ * **已配对的电脑排在「扫码添加电脑」之前** —— 配对过一次之后，回到这一页十有八九是连它们，
+ * 而「扫码添加」是低频动作。原来的顺序把最高频的入口压在最低频的那个大蓝按钮下面。
+ */
 import { useEffect, useRef, useState } from 'react'
 import QrScanner from '../../components/QrScanner'
 import { useStore } from '../../lib/store'
@@ -17,6 +28,8 @@ import {
   type PairedDevice,
 } from '../../store/devices'
 import { customIceText, resolveIceFor, saveCustomIce } from '../../api/ice'
+import SettingsSheet from '../components/SettingsSheet'
+import { IconSettings } from '../components/icons'
 import './Login.css'
 
 /**
@@ -79,6 +92,8 @@ export default function Login() {
   const [iceText, setIceText] = useState('')
   const [iceStatus, setIceStatus] = useState('')
   const [iceError, setIceError] = useState<string | null>(null)
+  /** 外观设置（主题 / 界面大小）—— 登录页也能改：用户很可能就是因为「太黑」才来这里。 */
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const busy = conn.status === 'connecting'
 
@@ -204,8 +219,31 @@ export default function Login() {
   return (
     <div className="login">
       <header className="login__head">
-        <h1 className="login__title">Virlen 手机控制</h1>
-        <p className="login__sub">连接你的电脑，随时查看与操作 Agent</p>
+        <div className="login__head-main">
+          <div className="brand">
+            {/*
+              logo 是品牌方给的**白色透明底**源图（250×250）：直接摆在浅色主题下等于消失，
+              所以给它一块固定的深色底盘 —— 深浅两套主题下都成立，也不必再维护一份浅色版图片。
+              `alt=""`：右边的字标已经念出「Virlen」，读屏再念一遍图片只是重复。
+            */}
+            <span className="brand__mark">
+              <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={250} height={250} />
+            </span>
+            <div className="brand__text">
+              <h1 className="login__title">Virlen</h1>
+              <p className="login__sub">手机控制 · 连上你的电脑，随时查看与操作 Agent</p>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="iconbtn"
+          title="设置（主题 / 界面大小）"
+          aria-label="设置"
+          onClick={() => setSettingsOpen(true)}
+        >
+          <IconSettings />
+        </button>
       </header>
 
       {conn.status === 'error' && conn.error && (
@@ -234,13 +272,16 @@ export default function Login() {
         </div>
       )}
 
-      <button type="button" className="btn btn--primary" disabled={busy} onClick={() => setScanning(true)}>
-        扫码添加电脑
-      </button>
-
+      {/*
+        已配对的电脑排在「扫码」**之前**（本次调整）：配对过一次之后，回到这一页十有八九
+        是连它们，而「扫码添加」是低频动作 —— 原来的顺序把最高频的入口压在最低频的大蓝按钮
+        下面。空列表时靠文案把手指引到下面那个按钮，首跑用户看到的下一个东西依然是它。
+      */}
       <section className="login__devices">
         <h2 className="login__section-title">已配对的电脑</h2>
-        {devices.length === 0 && <p className="login__empty">还没有配对过的电脑，先扫码添加。</p>}
+        {devices.length === 0 && (
+          <p className="login__empty">还没有配对过的电脑 —— 用下面的「扫码添加电脑」把电脑接进来。</p>
+        )}
         {devices.map((d) => (
           <DeviceRow
             key={d.hostKey}
@@ -256,6 +297,15 @@ export default function Login() {
           />
         ))}
       </section>
+
+      <button
+        type="button"
+        className="btn btn--primary btn--block"
+        disabled={busy}
+        onClick={() => setScanning(true)}
+      >
+        扫码添加电脑
+      </button>
 
       <details className="login__manual">
         <summary>手动输入 / 粘贴配对链接</summary>
@@ -310,6 +360,8 @@ export default function Login() {
           （手机端源码里不含任何中继凭证）。
         </p>
       </details>
+
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }
@@ -387,7 +439,12 @@ function DeviceRow({
   return (
     <div className="device">
       <div className="device__info">
-        <span className="device__name">{label}</span>
+        {/* 在线状态用一个小圆点提前到**名字那一行**：它本来是第三行灰字里的一句话，
+            而「这台电脑在不在线」是整页扫一眼最先要确认的事。 */}
+        <span className={`device__name${online ? ' device__name--online' : ''}`}>
+          {/* 名字单独一层：`text-overflow` 靠它生效（flex 容器的匿名文本行不能可靠省略） */}
+          <span className="device__name-text">{label}</span>
+        </span>
         {/* 改过名才显示原名：没改过时「原名」与上面那行逐字相同，只是噪音 */}
         {device.alias && <span className="device__meta">原名 {device.name}</span>}
         <span className={`device__meta${online ? ' device__meta--online' : ''}`}>
@@ -397,15 +454,22 @@ function DeviceRow({
           {describeDeviceGrantText(device, state)}
         </span>
       </div>
+      {/*
+        动作层级（本次调整）：主动作「连接」是行内**唯一像按钮**的东西，占满右侧；
+        改名 / 删除降级为无底无边的文字动作。此前三个同权重的实心方块并排，
+        手机上真正要按的那个反而没有优先级，点错「删除」的代价不可逆。
+      */}
       <div className="device__actions">
+        <div className="device__actions-quiet">
+          <button type="button" className="btn btn--quiet" disabled={busy} onClick={startEdit}>
+            改名
+          </button>
+          <button type="button" className="btn btn--quiet" disabled={busy} onClick={onRemove}>
+            删除
+          </button>
+        </div>
         <button type="button" className="btn btn--small" disabled={busy || expired} onClick={onConnect}>
           {expired ? '需重新扫码' : '连接'}
-        </button>
-        <button type="button" className="btn btn--small btn--ghost" disabled={busy} onClick={startEdit}>
-          改名
-        </button>
-        <button type="button" className="btn btn--small btn--ghost" disabled={busy} onClick={onRemove}>
-          删除
         </button>
       </div>
     </div>

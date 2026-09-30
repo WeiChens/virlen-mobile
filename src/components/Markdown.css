@@ -20,14 +20,14 @@
   line-height: 1.3;
 }
 .md h1 {
-  font-size: 17px;
+  font-size: calc(17px * var(--fs));
 }
 .md h2 {
-  font-size: 16px;
+  font-size: calc(16px * var(--fs));
 }
 .md h3,
 .md h4 {
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
 }
 .md ul,
 .md ol {
@@ -40,20 +40,20 @@
 .md blockquote {
   margin: 0 0 8px;
   padding: 2px 10px;
-  border-left: 3px solid #3a3a44;
-  color: #b9b9c3;
+  border-left: 3px solid var(--border-3);
+  color: var(--fg-4);
 }
 .md hr {
   border: none;
-  border-top: 1px solid #33333a;
+  border-top: 1px solid var(--border-2);
   margin: 12px 0;
 }
 
 /* 行内代码：不要吃掉中文标点的间距 */
 .md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-  background: #23232a;
+  font-size: calc(13px * var(--fs));
+  background: var(--bg-inline);
   border-radius: 4px;
   padding: 1px 5px;
 }
@@ -61,19 +61,19 @@
 .md pre {
   margin: 0 0 8px;
   padding: 10px 12px;
-  background: #16161b;
-  border: 1px solid #2c2c34;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow-x: auto;
 }
 .md pre code {
   background: none;
   padding: 0;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--fs));
   line-height: 1.5;
 }
 .md a {
-  color: #7ea2ff;
+  color: var(--accent-text);
 }
 .md__table-wrap {
   overflow-x: auto;
@@ -81,14 +81,14 @@
 }
 .md table {
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
 }
 .md th,
 .md td {
-  border: 1px solid #33333a;
+  border: 1px solid var(--border-2);
   padding: 4px 8px;
   text-align: left;
 }
 .md th {
-  background: #1e1e24;
+  background: var(--bg-th);
 }

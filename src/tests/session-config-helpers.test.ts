@@ -10,11 +10,13 @@ import type { SessionSummaryDTO } from 'virlen-remote'
 import { baseNameOf, groupNeedsAttention, groupSessions } from '../lib/session-groups'
 import {
   contextPercent,
+  countLines,
+  firstLinePreview,
   formatTokens,
   hasBody,
   pendingLabel,
-  toolLabel,
-  toolPreview,
+  systemLabel,
+  toolView,
 } from '../lib/messages'
 
 function session(patch: Partial<SessionSummaryDTO> & { id: string }): SessionSummaryDTO {
@@ -84,18 +86,62 @@ describe('消息渲染规则', () => {
     expect(hasBody({ text: '正文' })).toBe(true)
   })
 
-  it('toolLabel：有工具名就带上，没有就只显示「工具」（不猜）', () => {
-    expect(toolLabel({ text: '', role: 'tool', id: 't', createdAt: 0, toolName: 'read_file' })).toBe(
-      '工具 · read_file',
-    )
-    expect(toolLabel({ text: '', role: 'tool', id: 't', createdAt: 0 })).toBe('工具')
+  it('toolView：有工具名就用它，没解析到就是 null（不猜）', () => {
+    const base = { role: 'tool' as const, id: 't', createdAt: 0, text: 'src/index.ts' }
+    expect(toolView({ ...base, toolName: 'read_file' }).name).toBe('read_file')
+    expect(toolView(base).name).toBeNull()
   })
 
-  it('toolPreview：取第一行非空文本并截断；全空时给出可读占位', () => {
-    const base = { role: 'tool' as const, id: 't', createdAt: 0 }
-    expect(toolPreview({ ...base, text: '\n\n第一行\n第二行' })).toBe('第一行')
-    expect(toolPreview({ ...base, text: 'x'.repeat(100) })).toHaveLength(61) // 60 + 省略号
-    expect(toolPreview({ ...base, text: '\n \n' })).toBe('(无输出)')
+  it('toolView：规模给出行数与字符数（行数扣掉末尾空行）', () => {
+    // 工具输出几乎都以换行结尾：不扣掉的话每条都多报一行
+    const view = toolView({
+      role: 'tool',
+      id: 't',
+      createdAt: 0,
+      toolName: 'list_files',
+      text: 'src/index.ts\nsrc/store.ts\nsrc/ui/pages/Chat.tsx\n',
+    })
+    expect(view.size).toBe('3 行')
+    // 48 = 三行内容 + 三个换行（字符数是**原始正文**的，不做任何修剪）
+    expect(view.meta).toBe('3 行 · 48 字符')
+  })
+
+  it('toolView：没有正文就不报规模（展开后显示「没有输出」，不是「0 行」）', () => {
+    for (const text of ['', '  \n  ', '\n\n']) {
+      const view = toolView({ role: 'tool', id: 't', createdAt: 0, text })
+      expect(view.size).toBe('')
+      expect(view.meta).toBe('')
+    }
+  })
+
+  it('countLines：末尾空行不算，全空算 0 行', () => {
+    expect(countLines('a\nb\n')).toBe(2)
+    expect(countLines('a\nb\n\n\n')).toBe(2)
+    expect(countLines('a')).toBe(1)
+    expect(countLines('   \n ')).toBe(0)
+  })
+
+  it('firstLinePreview：只给一行且超长截断（折叠头只有一行，换行一律丢掉）', () => {
+    expect(firstLinePreview('\n\n第一行\n第二行')).toBe('第一行')
+    expect(firstLinePreview('x'.repeat(100))).toHaveLength(61) // 60 + 省略号
+    expect(firstLinePreview('   ')).toBe('')
+  })
+
+  it('systemLabel：拆出「[标签]」+ 正文预览 —— 压缩摘要默认折叠后仍能说明发生了什么', () => {
+    const base = { role: 'system' as const, id: 's', createdAt: 0 }
+    // 电脑侧压缩摘要的正文形如 `[上下文摘要] ……`：前缀成为折叠头的标签
+    expect(systemLabel({ ...base, text: '[上下文摘要] 之前的内容已压缩为摘要。' })).toEqual({
+      tag: '上下文摘要',
+      preview: '之前的内容已压缩为摘要。',
+    })
+    // 多行摘要：预览只取第一行（折叠头不换行）
+    expect(systemLabel({ ...base, text: '[上下文摘要]\n第一行\n第二行' }).preview).toBe('第一行')
+    expect(systemLabel({ ...base, text: '[上下文摘要]\n' }).preview).toBe('')
+    // 没有方括号前缀：不猜语义，标签退化为「系统消息」，预览照旧
+    expect(systemLabel({ ...base, text: '会话已重置' })).toEqual({
+      tag: '系统消息',
+      preview: '会话已重置',
+    })
   })
 
   it('contextPercent：未知占用返回 null（未知 ≠ 0%），超过窗口封顶 100', () => {

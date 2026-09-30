@@ -7,10 +7,10 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid #2c2c34;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #1a1a1e;
-  font-size: 14px;
+  background: var(--bg-card);
+  font-size: calc(14px * var(--fs));
   font-weight: 500;
 }
 .link__state-dot {
@@ -21,27 +21,27 @@
   background: currentColor;
 }
 .link__state--good {
-  color: #7fd8a0;
-  border-color: #2b4436;
-  background: #16241c;
+  color: var(--ok);
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
 }
 .link__state--relay {
-  color: #ffd98a;
-  border-color: #4a3a14;
-  background: #2c2513;
+  color: var(--warn);
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
 }
 .link__state--warn {
-  color: #ffb066;
-  border-color: #4a3520;
-  background: #2c2015;
+  color: var(--orange);
+  border-color: var(--orange-border);
+  background: var(--orange-bg);
 }
 .link__state--down {
-  color: #ff9a9a;
-  border-color: #4a2626;
-  background: #2c1717;
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }
 .link__state--plain {
-  color: #cfcfd6;
+  color: var(--fg-3);
 }
 .link__state-text {
   min-width: 0;
@@ -53,12 +53,12 @@
   flex: none;
   max-width: 62%;
   text-align: right;
-  font-size: 12.5px;
-  color: #d7d7de;
+  font-size: calc(12.5px * var(--fs));
+  color: var(--fg-2);
   word-break: break-word;
 }
 .link__value--warn {
-  color: #ffd98a;
+  color: var(--warn);
 }
 
 /* ── 底部动作 ── */
@@ -70,5 +70,5 @@
 
 /* ── 告警文案（`sheet__hint` 是共用的次要说明样式，这里只换颜色）── */
 .link__warn {
-  color: #ffd98a;
+  color: var(--warn);
 }

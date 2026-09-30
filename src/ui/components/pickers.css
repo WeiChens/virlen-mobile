@@ -5,10 +5,10 @@
   gap: 8px;
   max-height: 260px;
   overflow-y: auto;
-  border: 1px solid #2c2c34;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 8px;
-  background: #121216;
+  background: var(--bg-sunken);
   overscroll-behavior: contain;
 }
 .picker__group {
@@ -17,8 +17,8 @@
   gap: 4px;
 }
 .picker__group-name {
-  font-size: 11px;
-  color: #8a8a94;
+  font-size: calc(11px * var(--fs));
+  color: var(--fg-dim);
 }
 .picker__item {
   display: flex;
@@ -26,17 +26,18 @@
   gap: 8px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #1a1a1e;
-  color: #d7d7de;
+  background: var(--bg-card);
+  color: var(--fg-2);
   padding: 7px 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
   text-align: left;
   cursor: pointer;
 }
 .picker__item.is-on {
-  border-color: #4f7cff;
-  color: #fff;
+  border-color: var(--accent);
+  /* 选中项只有描边变化，文字在浅色主题下必须换成深蓝（白字在白底上等于消失）*/
+  color: var(--on-accent-bg);
 }
 .picker__item-main {
   display: flex;
@@ -50,20 +51,20 @@
   text-overflow: ellipsis;
 }
 .picker__item-path {
-  font-size: 11px;
-  color: #7c7c86;
+  font-size: calc(11px * var(--fs));
+  color: var(--fg-faint);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .picker__item-count {
   flex: none;
-  font-size: 11px;
-  color: #7c7c86;
+  font-size: calc(11px * var(--fs));
+  color: var(--fg-faint);
 }
 .picker__hint {
   margin: 0;
-  font-size: 12px;
-  color: #7c7c86;
+  font-size: calc(12px * var(--fs));
+  color: var(--fg-faint);
   line-height: 1.5;
 }

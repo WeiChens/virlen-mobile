@@ -3,10 +3,10 @@
  *
  * 布局（自上而下）：
  * 1. **顶栏**：设备名 + 状态（在线 / 工作中 / 压缩中 / 已暂停）、会话标题与模型 / 上下文摘要
- *    （点标题区 = 打开会话信息面板），右上角三个 iconbtn：通讯信号（点开通讯状态面板）、
- *    新建对话、会话列表抽屉；
+ *    （点标题区 = 打开会话信息面板），右上角四个 iconbtn：通讯信号（点开通讯状态面板）、
+ *    新建对话、会话列表抽屉、设置（主题 / 界面大小）；
  * 2. 链路横幅 / 暂停横幅 / 待应答卡片 / 一次性提示；
- * 3. 消息区（工具气泡带工具名、空气泡不渲染、流式实时正文 + 思考占位）；
+ * 3. 消息区（工具气泡带工具名、空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位）；
  * 4. 输入区（工作中变「停止」）。
  *
  * 不存在「本地方便地先把会话建出来」的路径：新对话只存在于内存（`chatStore.draft`），
@@ -23,7 +23,13 @@ import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import { linkStore } from '../../store/link'
 import { baseNameOf } from '../../lib/session-groups'
-import { contextPercent, hasBody, pendingLabel, toolLabel, toolPreview } from '../../lib/messages'
+import {
+  contextPercent,
+  hasBody,
+  pendingLabel,
+  systemLabel,
+  toolView,
+} from '../../lib/messages'
 import { signalTone } from '../../lib/rtc-stats'
 import InteractionCard from '../../components/InteractionCard'
 import Markdown from '../../components/Markdown'
@@ -31,45 +37,102 @@ import LinkSheet from '../components/LinkSheet'
 import NewChatPanel from '../components/NewChatPanel'
 import SessionDrawer from '../components/SessionDrawer'
 import SessionInfoSheet from '../components/SessionInfoSheet'
-import { IconList, IconPlus, IconSignal, IconSignalOff } from '../components/icons'
+import SettingsSheet from '../components/SettingsSheet'
+import { IconChevronDown, IconList, IconPlus, IconSettings, IconSignal, IconSignalOff, IconTerminal } from '../components/icons'
 import './Chat.css'
 
 /** 空消息窗口的**引用稳定**回退值（选择器不得每次新建数组，见 `useStoreSelector`）。 */
 const EMPTY_MESSAGES: MessageDTO[] = []
 
-/** 单条消息。工具消息默认折叠（正文往往是整段输出，展开会淹没对话）。 */
+/**
+ * 单条消息。
+ *
+ * 两类「正文很长」的气泡**默认折叠**，点头部展开：
+ * - `tool`：正文往往是整段输出（`git diff` 之类），展开会淹没对话；
+ * - `system`：压缩产生的**上下文摘要**是整段历史的浓缩，动辄数屏 —— 默认展开会直接把
+ *   对话流冲散，于是折叠态只留「标签 + 正文开头」，仍然告诉用户「这里压缩过一次」。
+ *
+ * 折叠态显示什么一律由 `lib/messages.ts` 的纯函数决定（可单测），本组件只管摆 HTML。
+ */
 const MessageRow = memo(function MessageRow({ message }: { message: MessageDTO }) {
   const [open, setOpen] = useState(false)
 
   if (message.role === 'tool') {
-    // 折叠态**只显示工具名**（用户要求，2026-10-01）：工具调用在对话流里是高频噪声，
-    // 折叠时应尽可能克制 —— 只留「这一步调了什么」，预览 / 正文都要展开后才占位。
+    /*
+     * 工具调用卡片（2026-10 重做）。旧版长什么样：折叠头是一个描边圆角框，里面又装一个
+     * 描边的「工具 · read_file」小标签（**框里还有框**），箭头是文字符号 `▸` 且飘在框外，
+     * 展开后正文是**另一个**圆角框硬拼在下面（两个圆角接不上，像两个组件叠着）。
+     *
+     * 现在是一张卡：头部（图标 + 等宽工具名 + 规模 + 旋转箭头）展开后在**同一张卡**里
+     * 多出一条分隔线、一段可横滑的等宽正文、一行规模小字。
+     *
+     * 折叠态的克制程度保持不变（用户 2026-10-01 拍板）：不摆输出预览，只回答
+     * 「这一步调了什么」（工具名）+「输出有多大」（行数）—— 后者不是预览，是「要不要展开」的依据。
+     */
+    const view = toolView(message)
     return (
       <div className="msg msg--tool">
-        <button
-          type="button"
-          className="msg__tool-head"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          title={open ? '收起工具输出' : '展开工具输出'}
-        >
-          <span className="msg__tool-chevron" aria-hidden="true">
-            {open ? '▾' : '▸'}
-          </span>
-          {/* 工具名由电脑侧解析（`buildToolNameIndex`），手机端不猜 */}
-          <span className="msg__tool-tag">{toolLabel(message)}</span>
-          {open && <span className="msg__tool-preview">{toolPreview(message)}</span>}
-        </button>
-        {open && <pre className="msg__tool-body">{message.text}</pre>}
+        <div className={`tool-card${open ? ' is-open' : ''}`}>
+          <button
+            type="button"
+            className="tool-card__head"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            title={open ? '收起工具输出' : '展开工具输出'}
+          >
+            <IconTerminal className="tool-card__icon" width={16} height={16} />
+            {/* 工具名由电脑侧解析（`buildToolNameIndex`），手机端不猜 */}
+            {view.name ? (
+              <code className="tool-card__name">{view.name}</code>
+            ) : (
+              <span className="tool-card__name tool-card__name--unknown">工具调用</span>
+            )}
+            {/* 展开后不重复规模：正文下面就有一行更全的（行数 · 字符数） */}
+            {!open && view.size && <span className="tool-card__size">{view.size}</span>}
+            <IconChevronDown className="tool-card__caret" width={15} height={15} />
+          </button>
+          {open && (
+            <>
+              {hasBody(message) ? (
+                <pre className="tool-card__body">{message.text}</pre>
+              ) : (
+                // 空输出也要说一句：空白卡片让人以为是渲染坏了（与「空正文不渲染气泡」同一条理由）
+                <p className="tool-card__empty">这次调用没有输出</p>
+              )}
+              {view.meta && <div className="tool-card__meta">{view.meta}</div>}
+            </>
+          )}
+        </div>
       </div>
     )
   }
 
   if (message.role === 'system') {
-    // 压缩摘要等系统消息：照常显示（用户需要知道这里发生过一次上下文压缩）
+    /*
+     * 压缩摘要等系统消息：**默认折叠**（真机反馈：摘要把对话流冲散）。
+     *
+     * 为什么不是「干脆不显示」：用户需要知道「这里发生过一次上下文压缩」，否则上下文占用
+     * 突然从 75% 掉到 10% 会显得莫名其妙。折叠态用「标签 + 正文开头」保住这条信息，
+     * 又不占版面；要看全文再点开。
+     */
+    const { tag, preview } = systemLabel(message)
     return (
       <div className="msg msg--system">
-        <div className="msg__bubble">{message.text}</div>
+        <button
+          type="button"
+          className="msg__fold-head"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          title={open ? '收起摘要' : '展开摘要'}
+        >
+          <span className="msg__fold-chevron" aria-hidden="true">
+            {open ? '▾' : '▸'}
+          </span>
+          <span className="msg__fold-tag">{tag}</span>
+          {/* 预览只在折叠态出现：展开后正文就在下面，再留一行摘要是重复 */}
+          {!open && preview && <span className="msg__fold-preview">{preview}</span>}
+        </button>
+        {open && <div className="msg__sys-body">{message.text}</div>}
       </div>
     )
   }
@@ -152,7 +215,11 @@ export default function Chat() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [linkOpen, setLinkOpen] = useState(false)
+  /** 外观设置（主题 / 界面大小）—— 与「会话信息」「通讯状态」是两层，入口也各自一个图标。 */
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  /** 输入框：只用于自动增高（值仍然受控于 `input`）。 */
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   /** 前插更早消息时用于保持视口（记录「距底部距离」，渲染后还原）。 */
   const anchorRef = useRef<number | null>(null)
   /** 与 `atBottom` 同步的 ref（供 `onStreamGrow` 读取，避免把 `atBottom` 做成回调依赖）。 */
@@ -270,6 +337,19 @@ export default function Chat() {
     if (el) el.scrollTop = el.scrollHeight
   }
 
+  /**
+   * 输入框自动增高（长到 CSS 的 `max-height` 为止）。
+   *
+   * 为什么不是简单加几行 `rows`：`rows` 是初始高度，不是上限，写大了就占掉半个屏幕。
+   * 先归零再量 `scrollHeight`，是唯一能让它「删回去也跟着缩」的写法。
+   *
+   * `scrollHeight` 为 0 时直接返回：jsdom 不排版，若照写 `0px` 会把输入框压成一条线（测试环境）。
+   */
+  const autoGrow = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto'
+    if (el.scrollHeight > 0) el.style.height = `${el.scrollHeight}px`
+  }
+
   // 跟随底部：只在用户本来就在底部时自动跟随，否则会打断「翻历史」
   // （流式增长那一条由 `StreamingBubble.onGrow` 触发，此处不再依赖 `streaming.seq`）
   useEffect(() => {
@@ -303,6 +383,8 @@ export default function Chat() {
   const submit = () => {
     const text = input
     setInput('')
+    // 缩回一行：否则发完一条长消息，输入框还占着好几行高度（里面却已经空了）
+    if (inputRef.current) inputRef.current.style.height = ''
     setAtBottom(true)
     // 无会话时由 store 负责「先创建再发送」（发送这一刻才创建）
     void chatStore.send(text)
@@ -364,6 +446,15 @@ export default function Chat() {
               <IconPlus />
             </button>
           )}
+          <button
+            type="button"
+            className="iconbtn"
+            title="设置（主题 / 界面大小）"
+            aria-label="设置"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <IconSettings />
+          </button>
           <button
             type="button"
             className="iconbtn"
@@ -489,12 +580,13 @@ export default function Chat() {
               type="button"
               className="chat__to-bottom"
               title="回到底部"
+              aria-label="回到底部"
               onClick={() => {
                 setAtBottom(true)
                 scrollToBottom()
               }}
             >
-              ↓
+              <IconChevronDown width={18} height={18} />
             </button>
           )}
         </div>
@@ -503,10 +595,14 @@ export default function Chat() {
       <footer className="chat__input">
         <textarea
           className="chat__textarea"
+          ref={inputRef}
           rows={1}
           placeholder={currentId ? '发消息给 Agent…' : '发消息即创建新会话…'}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value)
+            autoGrow(e.target)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
@@ -535,6 +631,7 @@ export default function Chat() {
         <SessionInfoSheet sessionId={currentId} onClose={() => setSheetOpen(false)} />
       )}
       {linkOpen && <LinkSheet onClose={() => setLinkOpen(false)} />}
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }

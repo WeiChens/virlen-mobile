@@ -1,6 +1,17 @@
-:root {
-  color-scheme: dark;
-}
+/*
+ * 全局底样式。颜色一律走 `theme.css` 的令牌（`--bg` / `--fg` / …），
+ * 字号一律 `calc(Npx * var(--fs))` —— 「界面大小」三档就是改 `--fs`（见 theme.css）。
+ * `color-scheme` 由 theme.css 按主题设置（放在这里会把浅色覆盖回深色）。
+ *
+ * ⚠️ **本文件在产物里排在页面 CSS 之后**：`main.tsx` 先 `import './App'`（页面样式随之入包），
+ * 最后才 import `theme.css` / `index.css`。这个顺序是有意的 —— 基类能稳稳压住页面里的
+ * 装饰性动画（下面 `prefers-reduced-motion` 那段就靠它）。
+ *
+ * 代价：页面 CSS 里写**单类修饰选择器**（`.iconbtn--signal-good`）会与本文件的基类同权重（0,1,0）
+ * 而被覆盖，且**不报错**（2026-10 真机缺陷：信号图标颜色全变灰）。页面里给这里的基类加档位时，
+ * 一律写成复合选择器 —— `.iconbtn.iconbtn--signal-good`（权重 0,2,0，与文件先后无关）。
+ * 守卫用例：`src/tests/css-cascade.test.ts`。
+ */
 * {
   box-sizing: border-box;
 }
@@ -11,10 +22,13 @@ body,
   margin: 0;
 }
 body {
-  background: #0f0f10;
-  color: #ececf1;
-  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font: calc(15px * var(--fs))/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
   -webkit-tap-highlight-color: transparent;
+  /* 装成 PWA 之后，页面边缘的手势默认会触发「下拉刷新 / 整页橡皮筋」——它会把
+     消息区的滚动误判成刷新。列表 / 抽屉这些内部滚动容器各自再写 `contain`（已有）。 */
+  overscroll-behavior-y: none;
 }
 .app {
   height: 100%;
@@ -23,12 +37,18 @@ body {
 }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: none;
   border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 15px;
-  background: #2a2a30;
-  color: #ececf1;
+  padding: calc(10px * var(--fs)) calc(14px * var(--fs));
+  /* 触控目标下限：手指按不准的按钮（尤其「小」档下塌到 30px 出头）在真机上就是「点了没反应」 */
+  min-height: calc(44px * var(--fs));
+  font-size: calc(15px * var(--fs));
+  background: var(--bg-btn);
+  color: var(--fg);
   cursor: pointer;
 }
 .btn:disabled {
@@ -36,22 +56,45 @@ body {
   cursor: default;
 }
 .btn--primary {
-  background: #4f7cff;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-fg);
 }
 /* 危险动作（停止 / 删除）：文案已足够说明，颜色只做区分，不用刺眼的红 */
 .btn--danger {
-  background: #4a2a2c;
-  color: #ff9d9d;
-  border: 1px solid #6a3a3c;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border-2);
 }
 .btn--ghost {
   background: transparent;
-  border: 1px solid #3a3a42;
+  border: 1px solid var(--border-3);
 }
 .btn--small {
-  padding: 7px 12px;
-  font-size: 13px;
+  padding: calc(7px * var(--fs)) calc(12px * var(--fs));
+  /* 次要动作也是动作：留 38px，别为了「紧凑」把触控目标压到 30px */
+  min-height: calc(38px * var(--fs));
+  font-size: calc(13px * var(--fs));
+}
+/*
+ * 三级动作：**看起来就不像按钮**（无底、无边、灰字）。
+ *
+ * 用途：低频且带破坏性的行内操作（改名 / 删除）。它们此前与「连接」同为实心按钮，
+ * 在手机上三个同权重的方块并排 → 真正的主动作（连接）没有视觉优先级。
+ */
+.btn--quiet {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  padding: calc(6px * var(--fs)) calc(8px * var(--fs));
+  min-height: calc(36px * var(--fs));
+  font-size: calc(13px * var(--fs));
+}
+.btn--quiet:active:not(:disabled) {
+  background: var(--bg-press);
+}
+/* 占满一行：页面级唯一主动作（如「扫码添加电脑」）才用它 */
+.btn--block {
+  width: 100%;
 }
 
 .banner {
@@ -60,22 +103,40 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
 }
 .banner--offline {
-  background: #3a2f14;
-  color: #ffd98a;
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 .banner--denied {
-  background: #3a1a1c;
-  color: #ff9d9d;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/*
+ * 减少动态效果（系统开关）：关掉滑入 / 脉动这类**装饰性**动画，但保留 spinner 与光标闪烁
+ * —— 它们传达的是「正在发生」，关掉反而会让人以为界面卡死。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .drawer,
+  .sgroup__alert-dot,
+  .srow__dot,
+  .dots i,
+  .caret {
+    animation: none;
+  }
+  .sheet__bar-fill {
+    transition: none;
+  }
 }
 
 .spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid #555;
-  border-top-color: #4f7cff;
+  border: 2px solid var(--track);
+  border-top-color: var(--accent);
   border-radius: 50%;
   display: inline-block;
   animation: spin 0.8s linear infinite;
@@ -84,4 +145,24 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+/*
+ * 图标按钮（38px 方框 + 描边）：登录页的「设置」入口与聊天页顶栏共用。
+ * 尺寸跟 `--fs` 走 —— 纯粹是「界面大小」的观感，与浮层定位无关，缩放无风险。
+ */
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(38px * var(--fs));
+  height: calc(38px * var(--fs));
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.iconbtn:active {
+  background: var(--bg-hover);
 }

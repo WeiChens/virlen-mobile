@@ -79,6 +79,7 @@ if (root) {
     <p class="muted">
       「占用 75%」后手机端会话信息面板才会出现「压缩上下文」（与桌面 token 环同判据：低于 40% 不给压）。
       压缩后 mock 会把消息换成一条摘要 + 推 messages.reset，手机端应自动重拉。
+      摘要气泡**默认折叠**（只留标签 + 开头），点一下展开全文、再点收回。
     </p>
     <div class="row">
       <button id="ctx-low" type="button">占用 10%</button>
@@ -97,6 +98,24 @@ function log(line: string): void {
   el.textContent = `[${time}] ${line}\n${el.textContent ?? ''}`
 }
 
+/**
+ * 把 `host.hello` 里手机自报的身份摘成一行 —— 联调「名字不对」时第一眼要看的就是它。
+ *
+ * 为什么值得单独打：电脑端「已绑定手机」列表 / 配对确认框里显示的**就是这个 `mobileName`**。
+ * 一旦那里显示的不是这支手机的名字，靠这行日志能立刻分清责任：
+ * - 这里打出来的是 `Pixel 7 · 1a2b` → 手机报对了，问题在电脑端怎么显示 / 怎么存；
+ * - 这里打出来的是别的东西（或空）→ 手机端报错了，查 `lib/identity.ts`。
+ */
+function describeHello(params: unknown): string {
+  const p = params as
+    | { mobileName?: unknown; mobileKey?: unknown; client?: { platform?: unknown } }
+    | undefined
+  const name = typeof p?.mobileName === 'string' && p.mobileName ? p.mobileName : '(未报名字)'
+  const key = typeof p?.mobileKey === 'string' && p.mobileKey ? p.mobileKey : '(未报 key)'
+  const platform = typeof p?.client?.platform === 'string' ? p.client.platform : '?'
+  return `${name} · ${key} · ${platform}`
+}
+
 // ---------------- 生命周期 ----------------
 
 function stop(): void {
@@ -111,7 +130,7 @@ function stop(): void {
 async function start(): Promise<void> {
   stop()
   // `demoToolMessage`：给 demo-1 补一条带工具名的工具消息 + 一条空正文的 assistant 消息
-  //（验证手机端的「工具 · list_files」气泡与「空气泡不渲染」两条规则）
+  //（验证手机端的工具调用卡片「list_files · 3 行」与「空气泡不渲染」两条规则）
   const source = createMockHostDataSource({
     streamSteps: 3,
     streamDelayMs: 60,
@@ -134,7 +153,7 @@ async function start(): Promise<void> {
   const rawHandle = endpoint.handle.bind(endpoint)
   endpoint.handle = (method, fn) =>
     rawHandle(method, async (params, ctx) => {
-      log(`← 调用 ${method}`)
+      log(method === 'host.hello' ? `← 调用 host.hello（手机自称：${describeHello(params)}）` : `← 调用 ${method}`)
       try {
         const result = await fn(params, ctx)
         log(`✓ 完成 ${method}`)

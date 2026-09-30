@@ -1,26 +1,78 @@
 .login {
-  padding: 20px;
+  /* 上下各让出一圈安全区域：`viewport-fit=cover` 之后，PWA 独立窗口下顶栏会被状态栏压住、
+     底部会被 Home Indicator 盖住（表现就是「最上面一行点点不到」）。 */
+  padding: calc(20px + var(--safe-top)) calc(20px + var(--safe-right)) calc(20px + var(--safe-bottom))
+    calc(20px + var(--safe-left));
   display: flex;
   flex-direction: column;
   gap: 14px;
   height: 100%;
   overflow-y: auto;
+  /* 这一层自己滚到头时不要把滚动链交给 body（否则 PWA 下会触发整页拖动 / 刷新） */
+  overscroll-behavior: contain;
+}
+.login__head {
+  /* 标题区 + 设置入口：两栏布局，避免右边多出来的图标把标题挤偏 */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.login__head-main {
+  min-width: 0;
+}
+
+/*
+ * ── 品牌区（logo + 字标）──
+ *
+ * `logo.png` 是品牌方给的**白色透明底**源图：深色页上很好看，浅色主题下直接隐形。
+ * 处理办法是给它一块**固定的深色底盘**（与主题无关）—— 深浅两套下都成立，
+ * 也不必再维护第二份图片资源（双份资源迟早漂移）。
+ */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.brand__mark {
+  flex: none;
+  width: calc(44px * var(--fs));
+  height: calc(44px * var(--fs));
+  border-radius: 12px;
+  background: #14141a;
+  border: 1px solid var(--border-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.brand__mark img {
+  display: block;
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+}
+.brand__text {
+  min-width: 0;
 }
 .login__title {
-  font-size: 22px;
+  font-size: calc(20px * var(--fs));
+  line-height: 1.25;
   margin: 0;
+  letter-spacing: 0.2px;
 }
 .login__sub {
-  color: #9a9aa5;
-  margin: 6px 0 0;
-  font-size: 13px;
+  color: var(--fg-muted);
+  margin: 3px 0 0;
+  font-size: calc(12px * var(--fs));
 }
 .login__connecting {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #9a9aa5;
-  font-size: 14px;
+  color: var(--fg-muted);
+  font-size: calc(14px * var(--fs));
 }
 .login__devices {
   display: flex;
@@ -28,21 +80,30 @@
   gap: 10px;
 }
 .login__section-title {
-  font-size: 14px;
-  color: #9a9aa5;
-  margin: 8px 0 0;
+  font-size: calc(14px * var(--fs));
+  color: var(--fg-muted);
+  margin: 0;
   font-weight: 600;
 }
 .login__empty {
-  color: #6f6f78;
-  font-size: 13px;
+  color: var(--fg-ghost);
+  font-size: calc(13px * var(--fs));
+  margin: 0;
+  line-height: 1.6;
 }
+/*
+ * 设备卡片：一列布局（信息在上、动作行在下）。
+ *
+ * 原来是左右两栏 —— 在 375px 的屏上，右侧三个按钮吃掉一半宽度，左侧的
+ * 「电脑在线 · 上次连接 …」被迫折成两行。改成上下之后，信息各占整行、动作行
+ * 也有了「左边次要 / 右边主要」的余地。
+ */
 .device {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
-  background: #1a1a1e;
+  background: var(--bg-card);
   border-radius: 12px;
   padding: 12px;
 }
@@ -53,11 +114,30 @@
   min-width: 0;
 }
 .device__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
-  /* 名字现在由用户输入（最长 24 字）—— 不加省略号会把那一行「电脑在线 · 上次连接」挤没 */
+  min-width: 0;
+}
+/* 名字可以被省略号截断，前面的小圆点不受影响 */
+.device__name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 在线小圆点：与第三行的文字结论同色，两种说法不会打架 */
+.device__name::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-4);
+}
+.device__name--online::before {
+  background: var(--ok-2);
 }
 /* 改名编辑态：整行从「信息 + 按钮」变成一列（输入框在上、按钮与说明在下） */
 .device--editing {
@@ -70,66 +150,75 @@
 }
 .device__input {
   width: 100%;
-  background: #202027;
-  color: #ececf1;
-  border: 1px solid #3a3a44;
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border-3);
   border-radius: 10px;
   padding: 8px 10px;
   font: inherit;
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
 }
 .device__input:focus {
   outline: none;
-  border-color: #4f7cff;
+  border-color: var(--accent);
 }
 .device__meta {
-  color: #8a8a94;
-  font-size: 12px;
+  color: var(--fg-dim);
+  font-size: calc(12px * var(--fs));
 }
 /* 在线：一眼可辨（绿）；离线 / 未知保持中性灰（不吓人，也不假装确定） */
 .device__meta--online {
-  color: #4ec9a5;
+  color: var(--ok-2);
 }
 /* 凭证过期 / 需重新扫码：给暖色警示，与在线/离线区分开 */
 .device__meta--warn {
-  color: #e0a35c;
+  color: var(--warn-2);
 }
 .device__actions {
   display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.login__manual summary {
-  color: #9a9aa5;
-  font-size: 13px;
+/* 左侧的次要动作组（改名 / 删除）：无底无边，与上面那行说明文字同一语气 */
+.device__actions-quiet {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: calc(-8px * var(--fs));
+}
+/*
+ * 两个折叠区（手动粘贴配对串 / 高级设置 ICE）共用一条规则 —— 同类控件只教一次；
+ * 同时给足 `padding` ：默认为一行 13px 小字，手指很难点中（这不靠 min-height，
+ * 因为 `summary` 的 `list-item` 一改成 flex 就会把系统那个三角标记弄丢）。
+ */
+.login summary {
+  color: var(--fg-muted);
+  font-size: calc(13px * var(--fs));
+  padding: 11px 0;
   cursor: pointer;
 }
 .login__textarea {
   width: 100%;
   margin-top: 8px;
-  background: #1a1a1e;
-  color: #ececf1;
-  border: 1px solid #33333a;
+  background: var(--bg-card);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
   border-radius: 10px;
   padding: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
 }
 .login__tip {
-  color: #6f6f78;
-  font-size: 12px;
+  color: var(--fg-ghost);
+  font-size: calc(12px * var(--fs));
   margin: 6px 0 0;
 }
 /* 非法自定义 ICE：暖色提醒，与「需重新扫码」同一个语气（都是「你得动手改点什么」） */
 .login__tip--warn {
-  color: #e0a35c;
+  color: var(--warn-2);
 }
 /* 高级设置（ICE 服务器）—— 与「手动输入配对串」同一形态，不再造一套视觉语言 */
-.login__advanced summary {
-  color: #9a9aa5;
-  font-size: 13px;
-  cursor: pointer;
-}
 .login__ice-actions {
   display: flex;
   gap: 8px;
