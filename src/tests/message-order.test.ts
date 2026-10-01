@@ -94,8 +94,8 @@ describe('message.added：向前回补的历史也必须落在前面', () => {
 
 /*
  * 窗口归一化（2026-11 真机）：控制台报 `Encountered two children with the same key` ——
- * 消息窗口里出现了同 id 的两条。虚拟列表对 key 唯一是**硬要求**：库的锚点解析取的是
- * **第一个**匹配 key 的那一项（`tanstack-anchor.test.ts` 里有一条用例把这个后果钉住了），
+ * 消息窗口里出现了同 id 的两条。React 对 key 唯一是**硬要求**：重复 key 会报
+ * `Encountered two children with the same key`，也会让折叠态张冠李戴，
  * 一条重复就能把视图甩走。
  *
  * 而重复进得来——本地两条写入通道都按 id 判过重（见上），能带进来的只有电脑侧直接给的

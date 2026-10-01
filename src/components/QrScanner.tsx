@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import jsQR from 'jsqr'
-import {
-  clampZoom,
-  getZoom,
-  probeCameraSupport,
-  setTorch,
-  setZoom as applyZoom,
-  triggerFocusOnce,
-  type CameraSupport,
-} from '../lib/camera'
 import { planScanRegions } from '../lib/scan-plan'
 import './QrScanner.css'
 
@@ -28,9 +19,6 @@ interface Props {
  */
 const DECODE_INTERVAL_MS = 100
 
-/** 长时间识别不出 → 给出「物理层」建议（多数扫码失败与软件无关，见 `scanner__notice`）。 */
-const SLOW_HINT_MS = 15000
-
 /**
  * 摄像头扫码。
  *
@@ -39,8 +27,8 @@ const SLOW_HINT_MS = 15000
  * 直接调用会**同步抛错**（旧实现会让 React 卸载整棵树 = 全黑屏），故这里先做上下文检查，
  * 并把一切异常收敛为**可读文案**。
  *
- * ⚠️ **对焦控制的能力边界见 `lib/camera.ts` 文件头**：点按对焦在 Web 上做不到，
- * iOS 更是全部不支持 —— 不支持时这里显示说明，**不给无效按钮**。
+ * ⚠️ **相机取景不做任何 `applyConstraints`**（不设对焦 / 补光 / 变焦）：这些都交给系统，
+ * 网页手动控制对焦在 Web 上本就做不到、iOS 更是全部不支持，且强制设置反而会改变镜头/裁切。
  *
  * ⚠️ **「对不上焦」多数时候其实是像素不够**：手机离屏幕太近会低于镜头最近对焦距离（必糊，
  * 软件无解），而站远又要求码上有足够像素 —— 解码的像素预算见 `lib/scan-plan.ts` 文件头
@@ -50,14 +38,9 @@ export default function QrScanner({ onResult, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const doneRef = useRef(false)
-  const trackRef = useRef<MediaStreamTrack | null>(null)
 
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
-  const [support, setSupport] = useState<CameraSupport | null>(null)
-  const [torchOn, setTorchOn] = useState(false)
-  const [zoom, setZoomValue] = useState<number | null>(null)
-  const [slow, setSlow] = useState(false)
   /**
    * 取景框（reticle）的**像素边长**。
    *
@@ -77,7 +60,6 @@ export default function QrScanner({ onResult, onCancel }: Props) {
     let raf = 0
     let cancelled = false
     let lastDecode = 0
-    let slowTimer: ReturnType<typeof setTimeout> | null = null
 
     /**
      * 一次解码尝试：**先扫中心、再扫全帧**。
@@ -170,15 +152,7 @@ export default function QrScanner({ onResult, onCancel }: Props) {
         await video.play()
         if (cancelled) return
 
-        // 只探明能力（供手动工具条用）；**不主动设对焦**，避免改变取景。
-        const track = stream.getVideoTracks()[0] ?? null
-        trackRef.current = track
-        setSupport(probeCameraSupport(track))
-        const z = getZoom(track)
-        if (z !== null) setZoomValue(z)
-
         setReady(true)
-        slowTimer = setTimeout(() => setSlow(true), SLOW_HINT_MS)
         raf = requestAnimationFrame(tick)
       } catch (err) {
         if (cancelled) return
@@ -191,7 +165,6 @@ export default function QrScanner({ onResult, onCancel }: Props) {
     return () => {
       cancelled = true
       if (raf) cancelAnimationFrame(raf)
-      if (slowTimer) clearTimeout(slowTimer)
       if (stream) stream.getTracks().forEach((t) => t.stop())
     }
   }, [])
@@ -221,32 +194,6 @@ export default function QrScanner({ onResult, onCancel }: Props) {
       window.removeEventListener('orientationchange', compute)
     }
   }, [ready])
-
-  const zoomRange = support?.zoom ?? null
-  const canControlFocus = support?.continuous === true || support?.singleShot === true
-  const showsAnyTool = canControlFocus || support?.torch === true || zoomRange !== null
-
-  const handleRefocus = () => {
-    void triggerFocusOnce(trackRef.current, support ?? probeCameraSupport(null))
-  }
-
-  const handleTorch = async () => {
-    const track = trackRef.current
-    if (!track) return
-    const next = !torchOn
-    const ok = await setTorch(track, next)
-    if (ok) setTorchOn(next)
-  }
-
-  const handleZoom = async (dir: -1 | 1) => {
-    const track = trackRef.current
-    if (!track || !zoomRange || zoom === null) return
-    const next = clampZoom(zoom + dir * zoomRange.step, zoomRange)
-    if (next === zoom) return
-    setZoomValue(next) // 乐观更新（否则连点会被 await 卡住）
-    const ok = await applyZoom(track, next)
-    if (!ok) setZoomValue(zoom) // 失败回滚，避免 UI 与设备状态不一致
-  }
 
   return (
     <div className="scanner">
@@ -279,67 +226,12 @@ export default function QrScanner({ onResult, onCancel }: Props) {
       ) : (
         <div className="scanner__hud">
           <p className="scanner__hint">将电脑端二维码放入画面，任意位置均可识别</p>
-
-          {ready && !showsAnyTool && (
-            <p className="scanner__notice">
-              本机浏览器不允许网页控制对焦（iOS 上普遍如此，由系统接管）——
-              若画面持续模糊，请把手机**拿远一点**（多数手机最近对焦距离约 10~20 厘米，凑太近任何软件都对不上）。
-            </p>
-          )}
-
-          {slow && (
-            <p className="scanner__notice">
-              还扫不到？① 先拉到 25~35 厘米 —— 凑太近会低于镜头最近对焦距离（那种糊任何软件都无解），
-              拉远后让二维码尽量充满取景框；② 稍微斜一点拍屏幕（正对易产生摩尔纹与反光）；
-              ③ 或直接用下方「手动输入配对串」。
-            </p>
-          )}
         </div>
       )}
 
       <div className="scanner__controls">
-        {ready && !error && showsAnyTool && (
-          <div className="scanner__tools">
-            {canControlFocus && (
-              <button type="button" className="scanner__tool" onClick={handleRefocus}>
-                重新对焦
-              </button>
-            )}
-            {support?.torch === true && (
-              <button
-                type="button"
-                className={`scanner__tool${torchOn ? ' is-on' : ''}`}
-                onClick={() => void handleTorch()}
-              >
-                {torchOn ? '关闭补光' : '打开补光'}
-              </button>
-            )}
-            {zoomRange !== null && zoom !== null && (
-              <span className="scanner__zoom">
-                <button
-                  type="button"
-                  className="scanner__tool"
-                  onClick={() => void handleZoom(-1)}
-                  aria-label="缩小"
-                >
-                  −
-                </button>
-                <span className="scanner__zoom-value">{zoom.toFixed(1)}×</span>
-                <button
-                  type="button"
-                  className="scanner__tool"
-                  onClick={() => void handleZoom(1)}
-                  aria-label="放大"
-                >
-                  ＋
-                </button>
-              </span>
-            )}
-          </div>
-        )}
-
-        <button type="button" className="btn btn--ghost" onClick={onCancel}>
-          返回（改用手动输入）
+        <button type="button" className="scanner__manual" onClick={onCancel}>
+          返回
         </button>
       </div>
     </div>

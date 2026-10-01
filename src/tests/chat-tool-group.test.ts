@@ -5,10 +5,9 @@
  * 可观测的行为 —— 纯函数层只能钉住「折叠态该显示什么文案」（`toolGroupView`，见
  * `message-rows.test.ts`）与「哪些消息合成一行」（`buildRows`）。
  *
- * ⚠️ 本环境（jsdom）里 `@tanstack/react-virtual` 一条都不渲染（量不到布局）→ 跑的是
- * `MessageList` 的**降级通道**（普通流全量渲染，见该文件头）。行模型的接线（`.vrow` 里
- * 是哪一种行）两条路径共用同一份 `ListRowView`，所以这里能钉住；虚拟窗口里的滚动行为
- * 另由 `tanstack-anchor.test.ts` 用可驱动的观察器桩在真库上验证。
+ * ⚠️ V6 **不虚拟化**（DOM 节点数 = 消息数，jsdom 里同样全量渲染）→ 这里跑的就是真实通道。
+ * 行模型的接线（`.vrow` 里是哪一种行）由 `ListRowView` 负责；滚动行为实现在 `inverted/stick.ts`
+ * （正确性依据见参考项目 `react虚拟列表前向插入/docs/结论与选型.md`）。
  *
  * 数据来源两条，与 `chat-tool-card.test.ts` 一样：
  * - **真实链路**：memory transport + 共享包的 mock 宿主（演示会话里那条 `list_files`）；

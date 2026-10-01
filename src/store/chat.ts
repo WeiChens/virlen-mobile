@@ -179,8 +179,8 @@ class ChatStore extends Store<ChatState> {
    *
    * 为何要在这里做（而不是只靠合并时判重）：本地两条写入通道（`message.added` 按 id 判重、
    * `loadOlder` 按 `known` 过滤）只能挡住「与本地重复」，**挡不住电脑侧那一页自带重复**。
-   * 而重复 id 会直接弄坏虚拟列表：库的锚点解析取**第一个**匹配 key 的那种项，一条重复就能让
-   * 补偿算到错的位置（真机表现：「加载更早的消息」后 `scrollTop` 没变、屏幕上却换了一屏内容）。
+   * 而重复 id 会直接弄坏列表：重复 key 会让 React 报 `Encountered two children with the same key`，
+   * 也会让折叠态张冠李戴（二者都按行的 key 记账）。
    * 详细来源分析见 `lib/messages.ts::dedupeMessages`。
    */
   private normalizeWindow(sessionId: string, incoming: readonly MessageDTO[]): MessageDTO[] {
@@ -190,7 +190,7 @@ class ChatStore extends Store<ChatState> {
     console.warn(
       `[virlen] 电脑侧下发的消息窗口含重复 id：会话 ${sessionId} 的 ${incoming.length} 条里有 ` +
         `${incoming.length - unique.length} 条重复，已在本机去重（保留先出现的那一条）。\n` +
-        '重复的 key 会让虚拟列表的锚点落到错误的那一条上（表现为「加载更早的消息」后视口内容错位）。\n' +
+        '重复的 key 会让 React 报错、并让折叠态张冠李戴。\n' +
         '请在电脑侧检查窗口合并：`sessionStore.loadOlderMessages` 的前插（它没有按 id 去重）。',
     )
     return unique

@@ -1,19 +1,16 @@
 /**
- * 消息区（`MessageList`）的接线用例 —— `@tanstack/react-virtual` 版（§34）。
+ * 消息区（`MessageList`）的接线用例 —— V6 倒置列表版（§34）。
  *
- * ## ⚠️ 先说清覆盖边界（这决定了本文件能钉什么、不能钉什么）
+ * ## ⚠️ 先说清覆盖边界
  *
- * 虚拟化由第三方库承担，而**库需要真实布局**：jsdom 里 `clientHeight` / `offsetHeight`
- * 全是 0（也没有 `ResizeObserver`）→ 库算出来的窗口是空的、一条都不渲染。
- *
- * 所以本文件钉的是**能自动验证的两件事**：
- * 1. **降级通道**：量不到布局时退回纯列表、消息一条不少（这也是既有组件级用例
- *    `chat-bubble-fold` / `chat-tool-card` 能继续跑的前提）；
- * 2. **结构契约**：哪些东西在虚拟化**之外**（消息行 / 尾部三块的位置），
+ * V6 **完全不虚拟化**：DOM 节点数 = 消息数，所有行在任何环境下都会被渲染（jsdom 也不例外）
+ * 且**始终参与真实布局**。所以这里能钉的比旧版更多：
+ * 1. **不丢消息**：注入多少条就渲染多少条（首尾都在）；
+ * 2. **结构契约**：哪些东西在行序列**之外**（消息行 / 尾部三块的位置），
  *    以及「滚动与重载都不会丢掉填到一半的状态」。
  *
- * 虚拟化本身的**锚定行为**（前插不跳位 / 贴底追加落底）由 `tanstack-anchor.test.ts`
- * 用可驱动的观察器桩在真库上验证；滚动的手感（惯性 / 渲染是否及时）仍只能真机核对。
+ * 滚动行为（前插不跳位 / 贴底跟随 / 翻历史不被打断）实现在 `inverted/stick.ts`，其正确性依据
+ * 与实测见参考项目 `react虚拟列表前向插入/docs/结论与选型.md`；滚动的手感仍只能真机核对。
  */
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -44,7 +41,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 const SESSION = 'demo-1'
-/** 注入的历史条数（要明显多于「一屏能装下的量」，用来证明降级时并没有偷偷少渲染）。 */
+/** 注入的历史条数（要明显多于「一屏能装下的量」，用来证明「不虚拟化」时一条都没漏渲染）。 */
 const MANY = 150
 
 function injectHistory(count: number): void {
@@ -138,20 +135,20 @@ afterEach(() => {
   }
 })
 
-describe('消息区：降级通道与结构契约', () => {
-  it('量不到布局时退回纯列表：**消息一条都不少**', async () => {
+describe('消息区：不虚拟化与结构契约', () => {
+  it('不虚拟化：消息**一条都不少**（DOM 节点数 = 消息数，首尾都在）', async () => {
     mount()
     await act(async () => {
       await flush(30)
     })
-    // 库在这种环境里一条都不渲染，降级通道必须把内容补上（否则是白屏）
-    expect(container!.querySelector('.chat__messages--plain')).not.toBeNull()
+    // V6 不用布局测量，任何环境都全量渲染（否则就是白屏 / 丢消息）
+    expect(container!.querySelector('.chat__messages')).not.toBeNull()
     expect(msgCount()).toBeGreaterThanOrEqual(MANY)
     expect(text()).toContain('第 0 条')
     expect(text()).toContain(`第 ${MANY - 1} 条`)
   })
 
-  it('结构契约：消息行在 `.vrow` 里；尾部（流式 / 卡片）在 `.chat__list-foot` 里 —— 不参与虚拟化', async () => {
+  it('结构契约：消息行在 `.vrow` 里；尾部（流式 / 卡片）在 `.chat__list-foot` 里 —— 独立于行序列', async () => {
     act(() => {
       chatStore.applyEvent('host.event.interaction.requested', {
         interaction: {
@@ -170,31 +167,31 @@ describe('消息区：降级通道与结构契约', () => {
       await flush(30)
     })
 
-    // 消息在行盒里（虚拟化会卸载/重建的就是这些行盒）
+    // 消息在行盒里
     expect(container!.querySelector('.vrow .msg')).not.toBeNull()
-    // 卡片的家在尾部，**不在**行盒里 —— 它永远不会被窗口卸载
+    // 卡片的家在尾部，**不在**行盒里 —— 它不受行序列的镜像/排序影响
     expect(container!.querySelector('.chat__list-foot .icard')).not.toBeNull()
     expect(container!.querySelector('.vrow .icard')).toBeNull()
   })
 
-  it('结构契约：头部（续页按钮）在**滚动容器之外** —— 它不参与虚拟化，也不会成为前插锚点的目标', async () => {
+  it('结构契约：续页按钮在滚动内容里、位于**视觉顶部**（倒置容器末位）', async () => {
     mount()
     await act(async () => {
       await flush(30)
     })
 
     const scroller = container!.querySelector('.chat__messages')
-    const head = container!.querySelector('.chat__list-head')
     expect(scroller).not.toBeNull()
-    expect(head).not.toBeNull()
-    /*
-     * 头部必须**不在**滚动容器里：它与消息行同处一个坐标系时，用户停在顶部（`scrollTop`
-     * 落在头部那段高度里）加载更早，库的锚点就变成头部 —— 它永远在 y=0 → 补偿量恒为 0 →
-     * `scrollTop` 一个字节没变、屏幕上的内容却换了一屏（真机反馈的原话）。
-     */
-    expect(scroller!.contains(head!)).toBe(false)
-    // 滚动容器里仍是「行 + 尾部」这一套（头部不再占一项）
+    // 顶部块（续页按钮 / 「加载消息…」提示）在滚动容器**内**
+    const top = scroller!.querySelector('.chat__list-top')
+    expect(top).not.toBeNull()
+    // 尾部（流式气泡 / 卡片）也在滚动容器内
     expect(scroller!.querySelector('.chat__list-foot')).not.toBeNull()
+    /*
+     * 视觉顺序：倒置容器里「DOM 末位 = 视觉最顶部」，所以顶部块必须是**最后一个**元素子节点
+     * —— 这样它才出现在最早那条消息之上、并随内容一起滚动（`scaleY(-1)` 会把它镜像回来）。
+     */
+    expect(scroller!.lastElementChild).toBe(top)
   })
 
   it('尾部状态不随消息重载丢失：填到一半的选择还在', async () => {

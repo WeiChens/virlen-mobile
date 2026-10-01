@@ -161,9 +161,8 @@
   /*
     纵向排布：头部（续页按钮，**不滚动**）+ 滚动容器。
 
-    ⚠️ 头部**不放进**滚动流（见 `MessageList.tsx` 文件头「列表的『项』」）：它会成为前插
-    锚点的目标（永远在 y=0 → 补偿量恒为 0），表现为「加载更早后 scrollTop 没变、
-    屏幕上的内容却换了一屏」。
+    ⚠️ 头部**不放进**滚动流：它在倒置容器里会被再镜像一次、也会把「加载更早」卷进滚动内容；
+    放在滚动容器之上，短会话滚不动时按钮也一直可见、任何滚动位置都能点。
   */
   display: flex;
   flex-direction: column;
@@ -173,62 +172,43 @@
   min-height: 0;
   overflow-y: auto;
   /*
-    ⚠️ 这里**不能**加 padding：虚拟化按「项相对滚动内容的偏移」算位置（`scrollTop` 也从
-    滚动内容顶算起），容器的内边距不在它的账里 —— 加了多少就偏多少。
-    留白一律做进**项内部的 padding** 与尾部那一块（`.chat__list-foot`）。
+    ⚠️ 这里**不能**加 padding：行间距与左右留白一律做进**行盒内部的 padding**（`.vrow`）
+    与尾部那一块（`.chat__list-foot`）—— 容器的内边距会让首尾贴不到边。
   */
   /*
-    关掉**浏览器原生滚动锚定**：前插的补偿由虚拟列表自己做（`anchorTo: 'end'`），
-    原生锚定再插一手就是「双重补偿」——两边叠在一起反而会跳。
+    关掉**浏览器原生滚动锚定**：本列表靠「倒置架构」从坐标系层面规避前插问题，
+    不需要原生锚定再插一手（它会与下方的漂移纠正打架）。
   */
   overflow-anchor: none;
   /* 上拉续页需要滚动链走到这里，否则会被外层容器吃掉 */
   overscroll-behavior: contain;
 }
 /*
-  降级通道（量不到布局时走这条，见 `MessageList.tsx` 文件头）：普通流全量渲染。
-
-  ⚠️ 这条通道里**没有**虚拟列表在补前插 —— 所以把原生滚动锚定**还回来**：它是这条通道
-  唯一的前插补偿（否则「加载更早」会把视口内容整体推走）。虚拟通道用不到它（上面已关）。
+  V6：**倒置列表**。数据倒序 + `scaleY(-1)` 把整个滚动容器镜像 → 视觉底部 = `scrollTop` 0。
+  于是「加载历史」变成「往数组尾部追加」：已有元素的内容坐标一律不变 → 前插零补偿。
+  （相比 `column-reverse`：`scrollTop` 语义与普通列表一致，不必到处做正负归一化。）
+  滚动条方向会被镜像（移动端不可见），这里直接隐藏。
 */
-.chat__messages--plain {
-  display: flex;
-  flex-direction: column;
-  overflow-anchor: auto;
+.chat__messages--flipped {
+  transform: scaleY(-1);
+  scrollbar-width: none;
 }
-/*
-  虚拟窗口的「舞台」：高度 = 各项高度之和（组件内联给出），项在其中绝对定位。
-
-  ⚠️ 它必须是**滚动内容的第一块**：项的偏移相对它算（头部不在列表里，见组件文件头）。
-*/
-.chat__list-body {
-  position: relative;
-  width: 100%;
+.chat__messages--flipped::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
-/*
-  一个虚拟项：位置由库算，组件用 `transform: translateY(start)` 摆好。
-
-  ⚠️ 绝对定位意味着**行外边距不会被折叠、也不参与偏移计算** —— 行间距必须做在项内部的
-  padding 里（`.vrow`），加 margin 就偏。
-*/
-.chat__vitem {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
+/* 直接子节点再镜像回来，保持正文正立 */
+.chat__messages--flipped > * {
+  transform: scaleY(-1);
 }
-/* 头部（**在滚动容器之外**）/ 空态 / 尾部：留白由它们撑起来 */
-.chat__list-head {
-  /* 常驻的一条：按钮居中（`hasOlder` 为真时才出现，翻到底就消失） */
+/* 顶部（视觉最顶部，倒置容器末位）/ 空态 / 尾部：留白由它们撑起来 */
+.chat__list-top {
+  /* 与尾部对称：与最早一条消息之间 10px、最顶 14px */
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px 2px;
-}
-/* 真的没东西时不占位（`:empty` 只匹配没有子节点的 div） */
-.chat__list-head:empty {
-  display: none;
+  padding: 14px 14px 10px;
 }
 .chat__list-empty {
   padding: 10px 14px 0;
@@ -240,8 +220,7 @@
 /*
   行盒：行间距与左右留白都做在它的 padding 里。
 
-  ⚠️ `flex: none` 只对降级通道有意义（那里父级是 flex 列，行盒会被压缩到 0）；
-  虚拟通道里它装在绝对定位的 `.chat__vitem` 里，这条规则不生效也不碍事。
+  ⚠️ `flex: none`：父级是 flex 列，不加它行盒会被压缩到 0。
 */
 .vrow {
   flex: none;
@@ -579,15 +558,15 @@
   - **工具调用组＝一张卡里的多步**（`.tool-group`，§35）：连续多条工具调用合成一段
     （真机反馈：一路 `read_file` / `grep` 刷屏），折叠起来只占一行；展开后组内每条仍是
     可各自展开的卡片，但**不再各自带边框**（见下面 `.tool-group__body` 的扁平化）。
-  - **系统消息＝一条提示**（`.msg__fold-*`）：它是「这里发生过什么」，居中、按内容收缩。
+  - **系统消息＝一条提示**（`.msg__fold-*`）：它是「这里发生过什么」，**居左**、按内容收缩。
 */
 .msg--tool,
 .msg--system {
   flex-direction: column;
 }
-/* 系统消息在消息区居中（与对话气泡区分开），折叠头按内容收缩而不撑满整行 */
+/* 系统消息在消息区**居左**，折叠头按内容收缩而不撑满整行 */
 .msg--system {
-  align-items: center;
+  align-items: flex-start;
 }
 
 /* ── 工具调用卡片 ── */
@@ -840,10 +819,11 @@
 /* 展开 / 收起指示：折叠态只留一个三角，不再占一整行宽度 */
 .msg__fold-chevron {
   flex: none;
-  width: 12px;
+  width: 15px;
   text-align: center;
   color: var(--fg-faint);
-  font-size: calc(10px * var(--fs));
+  font-size: calc(14px * var(--fs));
+  line-height: 1;
 }
 .msg__fold-tag {
   flex: none;

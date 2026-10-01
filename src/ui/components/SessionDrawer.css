@@ -129,10 +129,11 @@
 }
 .sgroup__chevron {
   flex: none;
-  width: 10px;
+  width: 15px;
   text-align: center;
   color: var(--fg-faint);
-  font-size: calc(10px * var(--fs));
+  font-size: calc(14px * var(--fs));
+  line-height: 1;
 }
 .sgroup__label {
   flex: 1;

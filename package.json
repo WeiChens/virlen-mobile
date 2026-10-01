@@ -11,7 +11,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "^3.14.13",
     "jsqr": "^1.4.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

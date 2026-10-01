@@ -8,10 +8,10 @@
  *
  * ## ⚠️ 覆盖边界（别把这条用例读大了）
  *
- * 真正的「前插后视口不跳 / 不落底」由 `@tanstack/react-virtual` 的锚定（`anchorTo`）承担，
- * 而它在本环境**一条都不渲染**（见 `chat-virtual-list.test.ts` 文件头）→ 这里跑的是**降级通道**；
- * 库的锚定行为另由 `tanstack-anchor.test.ts` 用可驱动的观察器桩验证。
- * 两条路径共用同一套跟随状态（`sticky`），所以「续页取消跟随」两边都覆盖得到；
+ * 真正的「前插后视口不跳 / 不落底」在 V6 里是**架构层面免费**的：数据倒序 + 容器 `scaleY(-1)`，
+ * 「加载历史」= 往数组尾部追加 → 已有元素偏移不变（见 `MessageList.tsx` 文件头）。
+ * 本环境（jsdom）里 V6 也是全量渲染（不虚拟化），所以这里能观测到完整行序。
+ * 跟随状态由贴底控制器（`inverted/stick.ts`）统一管理，「续页取消跟随」两边都覆盖得到；
  * 滚动本身只能真机核对。
  *
  * 分页靠 mock 的 `demoMessageCount`（默认 2 条，永远翻不出「更早的消息」）——
@@ -19,8 +19,8 @@
  *
  * 最后一条用例是 2026-11 真机缺陷的回归位（控制台报 `Encountered two children with the
  * same key`）：
- * 电脑侧那一页**自带重复 id** 时，本机必须归一化 —— 重复 key 会让虚拟列表的锚点落到错误的
- * 那一条上（后果已由 `tanstack-anchor.test.ts` 的一条用例钉住），不是「多一个气泡」那么轻。
+ * 电脑侧那一页**自带重复 id** 时，本机必须归一化 —— 重复 key 会让 React 报
+ * `Encountered two children with the same key`，也会让折叠态张冠李戴，不是「多一个气泡」那么轻。
  */
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -98,7 +98,7 @@ function click(el: Element): void {
 
 const text = (): string => container?.textContent ?? ''
 
-/** 头部那个续页按钮（不在最顶 / 没有更早的消息时它就不该在）。 */
+/** 顶部那条续页按钮（没有更早的消息时它就不该在）。 */
 const loadOlderButton = (): HTMLElement | null =>
   container?.querySelector<HTMLElement>('.chat__load-older') ?? null
 
@@ -184,7 +184,7 @@ describe('续页：加载更早的消息不得甩到底部', () => {
     expect(loadOlderButton()).toBeNull()
   })
 
-  it('电脑侧那一页**自带重复 id** 时：本机去重（消息不重、虚拟列表的 key 唯一）', async () => {
+  it('电脑侧那一页**自带重复 id** 时：本机去重（消息不重、React 的 key 唯一）', async () => {
     /*
      * 真机上这一页为什么可能重复：电脑侧 `loadOlderMessagesInner` 的前插
      * （`[...page.messages, ...既有窗口]`）没有按 id 去重 —— 游标一旦重叠（并发 / 流式定稿
@@ -213,7 +213,7 @@ describe('续页：加载更早的消息不得甩到底部', () => {
     const list = chatStore.getSnapshot().messages[SESSION] ?? []
     const ids = list.map((m) => m.id)
     expect(new Set(ids).size).toBe(ids.length) // store 里一条重复都没有
-    // 屏幕上也只有一条（降级通道全量渲染，所以这个计数就是真数）
+    // 屏幕上也只有一条（V6 全量渲染，所以这个计数就是真数）
     expect(text().match(/演示消息 #20/g) ?? []).toHaveLength(1)
   })
 })
