@@ -7,6 +7,9 @@
  *  2. 走的是 **P2P 直连**还是 **TURN 中继**（走中继意味着每个字节都要过服务器 —— 卡的第一嫌疑）；
  *  3. 链路安静了多久（「静的死」的唯一可见痕迹）。
  *
+ * §33 起多回答一件：**传输档位**（直连发完整 / 中继与类型未知只发主要内容）—— 用户看到
+ * 工具卡片上写着「已省略」时，这里是唯一能解释「为什么」的地方。
+ *
  * ## 数据从哪来（这里没有一样是猜的）
  *
  * - `linkStore`：本机 `getStats()` 采样出来的候选对 / 延迟 / 收发字节，**每 2 秒刷新**；
@@ -32,8 +35,12 @@ import {
   pathHint,
   pathText,
   signalTone,
+  tierHint,
+  tierOf,
+  tierText,
   type SignalTone,
 } from '../../lib/rtc-stats'
+import { MESSAGE_DETAIL_CAPABILITY, type TransferTier } from 'virlen-remote'
 import { IconClose } from './icons'
 import './LinkSheet.css'
 // `.sheet*` 是全局 CSS（不是 CSS Module）：抽屉外壳与 SessionInfoSheet 共用一份，改一处两处一起变
@@ -74,6 +81,19 @@ export default function LinkSheet({ onClose }: { onClose: () => void }) {
   // 本次链路持续了多久（面板每 2 秒随采样重渲染，直接算即可，不必再养一个计时器）
   const uptime = link.since ? Date.now() - link.since : null
 
+  /*
+   * 传输档位（§33）：档位由**本机判定的链路类型**推出（口径在共享包），
+   * 但「是否真的在精简」还看**电脑端支不支持** —— 它在 `hello` 应答的能力集里
+   * 列出 `message.detail` 才算支持。两个事实分开取，才能拼出一句不自相矛盾的话。
+   *
+   * ⚠️ 面板上要显示的是**生效档位**（两者兼得才算精简），不是「打算怎么发」：
+   * 电脑端太旧时摆一个「精简」、下面又写「照常全量下发」，用户只能认为界面坏了。
+   * 算法与电脑端的 `effectiveTier` 是一对（各自只知道自己那一半事实）。
+   */
+  const tier = tierOf(link.path)
+  const hostSupportsTier = conn.capabilities.includes(MESSAGE_DETAIL_CAPABILITY)
+  const effectiveTier: TransferTier = hostSupportsTier ? tier : 'full'
+
   return (
     <>
       <div className="sheet__backdrop" onClick={onClose} />
@@ -112,6 +132,18 @@ export default function LinkSheet({ onClose }: { onClose: () => void }) {
                 「走不走中继」只看当前选中的那一条候选对：任一端是 TURN 服务器就是中继。
                 它会变 —— 刚打通时可能先走中继，打洞成功后就换成直连。
               </p>
+            </Block>
+          )}
+
+          {/*
+            传输档位：它回答的是「为什么手机上工具输出是空的」——紧跟在「连接方式」后面，
+            因为档位就是由连接方式推出来的（用户在同一个区块里就能把因果读完）。
+            没连上时不摆（那时档位无意义）；面板不猜：文案全在 `tierHint` 里。
+          */}
+          {connected && (
+            <Block title="传输档位">
+              <Row label="档位" value={tierText(effectiveTier)} />
+              <p className="sheet__hint">{tierHint(effectiveTier, hostSupportsTier)}</p>
             </Block>
           )}
 

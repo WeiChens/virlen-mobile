@@ -9,7 +9,7 @@
  * 这也是防止有人又把判定抄回本端的守卫。
  */
 import { describe, expect, it } from 'vitest'
-import { classifyLinkKind } from 'virlen-remote'
+import { classifyLinkKind, transferTierOf } from 'virlen-remote'
 import {
   candidateText,
   formatBytes,
@@ -21,6 +21,9 @@ import {
   signalTone,
   statsEntries,
   summarizeRtcStats,
+  tierHint,
+  tierOf,
+  tierText,
   type RtcSample,
 } from '../lib/rtc-stats'
 
@@ -259,5 +262,35 @@ describe('判定委托给共享包 —— 本端不再自己判「直连 / 中�
       expect(summarizeRtcStats(stats).path).toBe(classifyLinkKind(stats))
     }
     expect(summarizeRtcStats([]).path).toBe(classifyLinkKind([]))
+  })
+})
+
+describe('§33 传输档位的展示文案 —— 「为什么工具输出是空的」只有这里能拼对', () => {
+  it('tierOf 与共享包 transferTierOf 完全一致（防止有人又把映射抄回本端）', () => {
+    for (const path of ['direct', 'relay', 'unknown'] as const) {
+      expect(tierOf(path)).toBe(transferTierOf(path))
+    }
+  })
+
+  it('档位文案直说「会发什么」，不摆术语', () => {
+    expect(tierText('lean')).toContain('只传主要内容')
+    expect(tierText('full')).toContain('含工具输出')
+  })
+
+  it('精简档：说清「中继 / 未判定才这样」+「工具输出不下发」+「怎么拿回全文」', () => {
+    const hint = tierHint('lean', true)
+    expect(hint).toContain('TURN 中继')
+    expect(hint).toContain('输出正文不下发')
+    expect(hint).toContain('重开会话')
+  })
+
+  it('直连档：明说「不省任何东西」（用户不必担心少看了什么）', () => {
+    expect(tierHint('full', true)).toContain('完整下发')
+  })
+
+  it('电脑端不支持档位时**不能说**「精简」（那台电脑端其实一个字节都没省）', () => {
+    const hint = tierHint('full', false)
+    expect(hint).toContain('不支持传输档位')
+    expect(hint).toContain('照常下发')
   })
 })

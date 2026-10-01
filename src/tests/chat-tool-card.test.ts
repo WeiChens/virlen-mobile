@@ -96,6 +96,21 @@ function cardOf(label: string): HTMLElement {
   return found
 }
 
+/**
+ * 追加一条**有正文的** assistant 消息，把下面要投的那条工具消息与演示会话里那条
+ * `list_files` 隔开。
+ *
+ * 为什么需要这一步：两条视觉连续的工具调用会被合成**一组**（§35），而组在折叠态
+ * **不渲染组内卡片** —— 本文件这几条用例关心的是卡片自己的折叠，所以先放一条看得见的
+ * 消息当边界（组本身的行为由 `chat-tool-group.test.ts` 钉）。
+ */
+function breakToolRun(id: string): void {
+  chatStore.applyEvent('host.event.message.added', {
+    sessionId: 'demo-1',
+    message: { id, role: 'assistant', text: '接着查。', createdAt: Date.now() },
+  })
+}
+
 function head(card: HTMLElement): HTMLButtonElement {
   const el = card.querySelector<HTMLButtonElement>('.tool-card__head')
   if (!el) throw new Error('工具卡片的头部没渲染出来')
@@ -163,6 +178,7 @@ describe('工具调用卡片', () => {
     await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
 
     act(() => {
+      breakToolRun('before-unknown')
       chatStore.applyEvent('host.event.message.added', {
         sessionId: 'demo-1',
         message: { id: 'tool-unknown', role: 'tool', text: 'boom', createdAt: Date.now() },
@@ -187,6 +203,7 @@ describe('工具调用卡片', () => {
     await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
 
     act(() => {
+      breakToolRun('before-empty')
       chatStore.applyEvent('host.event.message.added', {
         sessionId: 'demo-1',
         message: { id: 'tool-empty', role: 'tool', text: '   ', createdAt: Date.now(), toolName: 'noop' },
@@ -207,5 +224,51 @@ describe('工具调用卡片', () => {
     expect(expanded.querySelector('.tool-card__body')).toBeNull()
     expect(expanded.querySelector('.tool-card__empty')?.textContent).toBe('这次调用没有输出')
     expect(expanded.querySelector('.tool-card__meta')).toBeNull()
+  })
+
+  /**
+   * §33：被**传输档位**省略的工具输出。
+   *
+   * 它与上面的「空输出」在 DOM 里长得一模一样（正文都是空串）——区分它们的**只有电脑端打的
+   * `detail:'omitted'` 标记**。所以这条用例钉的是：有标记时必须说「已省略」，而不是
+   * 嘴硬说「这次调用没有输出」（工具有输出，只是没下发）。
+   */
+  it('被档位省略：折叠态就标「已省略」，展开后说明是策略（而不是「没有输出」）', async () => {
+    await connect()
+    await chatStore.openSession('demo-1')
+    await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
+
+    act(() => {
+      breakToolRun('before-omitted')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-omitted',
+          role: 'tool',
+          text: '',
+          createdAt: Date.now(),
+          toolName: 'run_command',
+          detail: 'omitted',
+        },
+      })
+    })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    const card = cardOf('run_command')
+    // 折叠态就报「已省略」：跟空输出一样静静什么都不说，用户会以为这一步没有产物
+    expect(head(card).querySelector('.tool-card__size')?.textContent).toBe('已省略')
+    expect(head(card).querySelector('.tool-card__size--omitted')).not.toBeNull()
+
+    click(head(card))
+    const expanded = cardOf('run_command')
+    expect(expanded.querySelector('.tool-card__empty')).toBeNull()
+    const omitted = expanded.querySelector('.tool-card__omitted')
+    expect(omitted?.textContent).toContain('工具输出已省略')
+    // 带上「怎么拿回全文」：只说「被省略了」会让用户以为永久丢了
+    expect(omitted?.textContent).toContain('重开会话')
   })
 })

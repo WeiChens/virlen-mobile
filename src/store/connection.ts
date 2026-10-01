@@ -15,6 +15,9 @@ import {
   BridgeError,
   Endpoint,
   createCaller,
+  MESSAGE_DELETE_CAPABILITY,
+  MESSAGE_DETAIL_CAPABILITY,
+  MESSAGE_QUOTE_CAPABILITY,
   type HelloResult,
   type HostApi,
   type Transport,
@@ -181,6 +184,25 @@ const CLIENT_CAPABILITIES = [
   'session.compress',
   'interaction.answer',
   'stream.delta',
+  /**
+   * §33：本端能渲染「正文被传输档位省略」的标记（`MessageDTO.detail`）。
+   *
+   * 声明了它，电脑端才会在中继 / 类型未知的链路上只发主要内容（工具输出不下发）；
+   * 不声明的旧客户端会继续收全量 —— 因为它会把省略显示成「这次调用没有输出」（假话）。
+   */
+  MESSAGE_DETAIL_CAPABILITY,
+  /**
+   * §36：本端支持消息级操作 —— 发引用（`SendParams.quotes`）、渲染引用条、删单条消息。
+   *
+   * 与上面那个同理，这是**双向协商**：只声明不够，还要看电脑端有没有对应能力
+   * （`hello` 应答里的同一批名字）——旧的电脑端会静默丢掉引用 / 没有删消息方法，
+   * 所以菜单入口由**电脑端声明**决定（见 `planMessageActions`）。
+   *
+   * 本端声明它的意义在于「我是新客户端」：将来电脑端若要按客户端版本调整行为
+   * （比如给旧客户端发降级形态），这份声明就是依据 —— 不声明只能猜。
+   */
+  MESSAGE_QUOTE_CAPABILITY,
+  MESSAGE_DELETE_CAPABILITY,
 ]
 
 interface ActiveConnection {

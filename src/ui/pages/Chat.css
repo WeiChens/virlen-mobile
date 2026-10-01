@@ -158,16 +158,97 @@
   position: relative;
   flex: 1;
   min-height: 0;
-}
-.chat__messages {
-  height: 100%;
-  overflow-y: auto;
-  padding: 14px;
+  /*
+    纵向排布：头部（续页按钮，**不滚动**）+ 滚动容器。
+
+    ⚠️ 头部**不放进**滚动流（见 `MessageList.tsx` 文件头「列表的『项』」）：它会成为前插
+    锚点的目标（永远在 y=0 → 补偿量恒为 0），表现为「加载更早后 scrollTop 没变、
+    屏幕上的内容却换了一屏」。
+  */
   display: flex;
   flex-direction: column;
-  gap: 10px;
+}
+.chat__messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /*
+    ⚠️ 这里**不能**加 padding：虚拟化按「项相对滚动内容的偏移」算位置（`scrollTop` 也从
+    滚动内容顶算起），容器的内边距不在它的账里 —— 加了多少就偏多少。
+    留白一律做进**项内部的 padding** 与尾部那一块（`.chat__list-foot`）。
+  */
+  /*
+    关掉**浏览器原生滚动锚定**：前插的补偿由虚拟列表自己做（`anchorTo: 'end'`），
+    原生锚定再插一手就是「双重补偿」——两边叠在一起反而会跳。
+  */
+  overflow-anchor: none;
   /* 上拉续页需要滚动链走到这里，否则会被外层容器吃掉 */
   overscroll-behavior: contain;
+}
+/*
+  降级通道（量不到布局时走这条，见 `MessageList.tsx` 文件头）：普通流全量渲染。
+
+  ⚠️ 这条通道里**没有**虚拟列表在补前插 —— 所以把原生滚动锚定**还回来**：它是这条通道
+  唯一的前插补偿（否则「加载更早」会把视口内容整体推走）。虚拟通道用不到它（上面已关）。
+*/
+.chat__messages--plain {
+  display: flex;
+  flex-direction: column;
+  overflow-anchor: auto;
+}
+/*
+  虚拟窗口的「舞台」：高度 = 各项高度之和（组件内联给出），项在其中绝对定位。
+
+  ⚠️ 它必须是**滚动内容的第一块**：项的偏移相对它算（头部不在列表里，见组件文件头）。
+*/
+.chat__list-body {
+  position: relative;
+  width: 100%;
+}
+/*
+  一个虚拟项：位置由库算，组件用 `transform: translateY(start)` 摆好。
+
+  ⚠️ 绝对定位意味着**行外边距不会被折叠、也不参与偏移计算** —— 行间距必须做在项内部的
+  padding 里（`.vrow`），加 margin 就偏。
+*/
+.chat__vitem {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+/* 头部（**在滚动容器之外**）/ 空态 / 尾部：留白由它们撑起来 */
+.chat__list-head {
+  /* 常驻的一条：按钮居中（`hasOlder` 为真时才出现，翻到底就消失） */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px 2px;
+}
+/* 真的没东西时不占位（`:empty` 只匹配没有子节点的 div） */
+.chat__list-head:empty {
+  display: none;
+}
+.chat__list-empty {
+  padding: 10px 14px 0;
+}
+.chat__list-foot {
+  /* 与最后一条消息之间 10px、底部 14px（自带内边距，内部卡片的 margin 也不会塌出去） */
+  padding: 10px 14px 14px;
+}
+/*
+  行盒：行间距与左右留白都做在它的 padding 里。
+
+  ⚠️ `flex: none` 只对降级通道有意义（那里父级是 flex 列，行盒会被压缩到 0）；
+  虚拟通道里它装在绝对定位的 `.chat__vitem` 里，这条规则不生效也不碍事。
+*/
+.vrow {
+  flex: none;
+  padding: 10px 14px 0;
+  /* 列向 flex：气泡 / 工具卡 / 系统消息都是「整行的一块」，横向拉伸交给 align-items */
+  display: flex;
+  flex-direction: column;
 }
 /* 续页兜底按钮（短会话滚不动时也要能点） */
 .chat__load-older {
@@ -235,6 +316,55 @@
 .msg--assistant .msg__bubble {
   white-space: normal;
 }
+/*
+ * AI 回复的**正文字号**（2026-10 真机反馈：AI 回复整体小一码）。
+ *
+ * 为什么落在 `.md` 上，而不是 `.msg--assistant .msg__bubble`：
+ * - 用户气泡保持 `.msg__bubble` 的 14px 不动 —— 两种气泡在屏幕上本就该一眼分得开；
+ * - 写成 `.msg--assistant .msg__bubble`（0,2,0）会连**状态占位气泡**
+ *   （`.msg__bubble--pending`，单类 0,1,0）的 `font-size` 一起盖掉 —— 那正是本仓
+ *   专门写用例防的「静默失效」形态（同一个值也照样是坑：以后改一处两处都变，看不出为什么）。
+ *
+ * ⚠️ `.md` 里的标题 / 行内代码 / 代码块 / 表格是**各自的绝对字号**，
+ *    跟着调一码要改 `Markdown.css`（那里列了是哪六处）。
+ */
+.msg__bubble .md {
+  font-size: calc(13px * var(--fs));
+}
+/*
+ * 引用条（§36）：气泡内、正文上方。
+ *
+ * 为什么只有一根竖条 + 半透明文字（不摆底色）：它要同时活在**两种气泡**里 ——
+ * 用户的（`--accent` 底 + 白字）与 AI 的（`--bg-bubble` 底 + 前色字）。用 `currentColor`
+ * 画竖条 = 自动跟随所在气泡的文字色，两套主题、两种气泡都不用单独调。
+ * 底色则会撞上 accent（灰底压在蓝底上很难看）。
+ */
+.msg__quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.quote-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 1px 0 1px 8px;
+  border-left: 3px solid currentColor;
+  font-size: calc(12px * var(--fs));
+  opacity: 0.85;
+}
+.quote-bar__who {
+  flex: none;
+  font-weight: 600;
+}
+.quote-bar__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .msg--user .msg__bubble {
   background: var(--accent);
   color: var(--accent-fg);
@@ -296,13 +426,22 @@
 }
 
 /* ── 输入区 ── */
+/*
+  自 §36 起是**两行**：上面一行是待引用的 chip（有引用时才出现），下面是输入框 + 发送。
+  所以容器从 `row` 改成 `column`，真正的横排交给 `.chat__input-row`。
+*/
 .chat__input {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
   gap: 8px;
   /* 底部让出安全区域：Home Indicator 会盖住最后那一行，表现就是「发送按不动」 */
   padding: 10px calc(14px + var(--safe-right)) calc(10px + var(--safe-bottom)) calc(14px + var(--safe-left));
   border-top: 1px solid var(--line);
+}
+.chat__input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }
 .chat__textarea {
   flex: 1;
@@ -317,6 +456,78 @@
      下限保证单行时也有一个够手指按的框；上限 120px 之后自己内部滚。 */
   min-height: calc(44px * var(--fs));
   max-height: 120px;
+}
+
+/* ── 待引用的 chip（§36）：发出去之前看得见、删得掉 ── */
+.chat__quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.quote-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
+  /* 左侧竖条是「引用」的通用视觉语言（与气泡里的引用条同一形状） */
+  border-left: 3px solid var(--accent-text);
+  border-radius: 6px;
+  background: var(--bg-card);
+  font-size: calc(12.5px * var(--fs));
+  color: var(--fg-2);
+}
+.quote-chip__who {
+  flex: none;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.quote-chip__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.quote-chip__remove {
+  flex: none;
+  margin-left: auto;
+  width: calc(24px * var(--fs));
+  height: calc(24px * var(--fs));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: calc(16px * var(--fs));
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ── 一次性提示（复制成功 / 已加入引用 / 操作失败）：飘在输入区上方，自动消失 ── */
+.chat__toast {
+  position: fixed;
+  left: 50%;
+  /* 高于底部面板（z-index 21）之外的 30：复制提示紧跟面板关闭，不能被它压住 */
+  z-index: 30;
+  bottom: calc(84px + var(--safe-bottom));
+  transform: translateX(-50%);
+  max-width: 80vw;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  box-shadow: 0 6px 18px var(--shadow);
+  color: var(--fg-2);
+  font-size: calc(13px * var(--fs));
+  animation: toast-in 0.16s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
 }
 
 /* ── 链路横幅（M5）：掉线时不把用户踢回登录页，只告知「现在收不到」 ── */
@@ -355,16 +566,19 @@
 }
 
 /*
-   ── 可折叠块：工具调用卡片 + 系统消息（压缩摘要） ──
+   ── 可折叠块：工具调用卡片 / 工具调用组 + 系统消息（压缩摘要） ──
 
   共同点：正文都可能很长（工具输出 / 整段历史的浓缩），默认展开都会淹没对话流，因而默认折叠。
 
-  但从 2026-10 起两者**不再共用一套外观**，因为它们不是同一种东西：
+  但它们**不共用一套外观**，因为它们不是同一种东西：
 
   - **工具调用＝一张卡**（`.tool-card`）：它是「流程里的一步」，信息结构是
     「调了什么工具 + 输出有多大 + 输出了什么」，所以头部与正文必须在**同一张卡**里，
     中间用一条内部分隔线接续。旧版是「折叠头一个圆角框 + 正文另一个圆角框」硬拼，
     两个圆角接不上，看起来像两个组件叠在一起。
+  - **工具调用组＝一张卡里的多步**（`.tool-group`，§35）：连续多条工具调用合成一段
+    （真机反馈：一路 `read_file` / `grep` 刷屏），折叠起来只占一行；展开后组内每条仍是
+    可各自展开的卡片，但**不再各自带边框**（见下面 `.tool-group__body` 的扁平化）。
   - **系统消息＝一条提示**（`.msg__fold-*`）：它是「这里发生过什么」，居中、按内容收缩。
 */
 .msg--tool,
@@ -494,6 +708,24 @@
   color: var(--fg-ghost);
   font-size: calc(12px * var(--fs));
 }
+/*
+ * 被传输档位省略（§33）：与「空输出」同一块位置，但**不能长成一个样子** ——
+ * 「什么都没发生」与「本来有东西、被策略省了」对用户的含义完全不同，
+ * 后者读起来应该像一句解释（正常文字色 + 行高宽松），而不是一行灰字提示。
+ */
+.tool-card__omitted {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-code);
+  color: var(--fg-3);
+  font-size: calc(12px * var(--fs));
+  line-height: 1.6;
+}
+/* 折叠态右侧的「已省略」：比规模（`3 行`）多说一点信息，稍微提一点对比度 */
+.tool-card__size--omitted {
+  color: var(--fg-faint);
+}
 /* 展开后正文底部的规模：字号比折叠态那行大一点，因为这里还带字符数 */
 .tool-card__meta {
   padding: 6px 12px;
@@ -501,6 +733,90 @@
   color: var(--fg-ghost);
   font-size: calc(11px * var(--fs));
   text-align: right;
+}
+
+/* ── 工具调用组：连续多条工具调用合成同行（§35）── */
+.tool-group {
+  /* 与单条工具卡同一副骨架：占满整行、一张卡，圆角由卡片自己剪 */
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.tool-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  /* 与单条工具卡同高：38px 接近拇指的可靠下限，折叠态也得好点 */
+  min-height: calc(38px * var(--fs));
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.tool-group__head:active {
+  background: var(--bg-hover);
+}
+/* 图标只负责「这里是一段工具执行」的类别提示，颜色压低，不与计数抢 */
+.tool-group__icon {
+  flex: none;
+  color: var(--fg-faint);
+}
+/*
+ * 计数是一**句话**（`3 次工具调用`），不是标识符 —— 所以不套等宽 + 浅底那身「代码」装
+ * （与「解析不到工具名」时同一条理由）。
+ * `flex: 1` 把规模与箭头挤到右边；`min-width: 0` 让很长的文案能收缩出省略号。
+ */
+.tool-group__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(13px * var(--fs));
+}
+/* 规模（`共 128 行`）：与单条卡片的 `.tool-card__size` 同一套小字与灰阶 */
+.tool-group__size {
+  flex: none;
+  color: var(--fg-ghost);
+  font-size: calc(11px * var(--fs));
+}
+.tool-group__size--omitted {
+  color: var(--fg-faint);
+}
+/* 展开箭头：与工具卡同一语汇（折叠态朝下、展开态转上去） */
+.tool-group__caret {
+  flex: none;
+  color: var(--fg-faint);
+  transition: transform 0.15s ease-out;
+}
+.tool-group.is-open .tool-group__caret {
+  transform: rotate(180deg);
+}
+/* 展开后：一条分隔线接上，组内每条工具调用在它下面依次排开 */
+.tool-group__body {
+  border-top: 1px solid var(--line);
+}
+/*
+ * 组内卡片**扁平化**：去掉各自的边框 / 圆角 / 底色，只留一条条发丝分隔线。
+ *
+ * 为什么不留成「卡里再装卡」：那正是 2026-10 重做工具卡时明确否掉的形态（框里还有框）。
+ * 组内每条自己的展开区（`.tool-card__body`）自带分隔线与底色，所以看上去仍是
+ * 「一张卡里的一个个小节」。
+ */
+.tool-group__body .tool-card {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+/* 组内相邻两条之间一条分隔线（首条不画：它上面已经有组的接缝） */
+.tool-group__body .msg--tool + .msg--tool {
+  border-top: 1px solid var(--line);
 }
 .msg__fold-head {
   display: flex;
@@ -557,4 +873,13 @@
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+  /*
+   * 上限：摘要动辄数屏（整段历史的浓缩），不封顶的话点开一次就把输入框顶到屏幕外，
+   * 用户还以为界面坏了 —— 超了就**内部**滚。
+   * 数字与工具卡正文（`.tool-card__body`）取同一组：同一个页面上不该有两种上限口径；
+   * `overscroll-behavior: contain` 防滚动链传给消息区（否则列表跟着漂）。
+   */
+  max-height: min(50vh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }

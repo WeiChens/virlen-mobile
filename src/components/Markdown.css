@@ -1,4 +1,11 @@
-/* Markdown —— 消息正文排版。宽度与字号都按「手机一屏」定，不做桌面式留白。 */
+/*
+ * Markdown —— 消息正文排版。宽度与字号都按「手机一屏」定，不做桌面式留白。
+ *
+ * ⚠️ 字号分两层，改的时候要一起看：
+ *  - **基准**在 `Chat.css` 的 `.msg__bubble .md`（AI 回复的字号，比用户气泡小一码，走 `--fs`）；
+ *  - **下面每一处都是绝对字号**（标题 / 行内代码 / 代码块 / 表格不是 `em` 相对量）——
+ *    基准调一码，这六处要**逐个跟着调**，否则会变成「标题比正文大得离谱」。
+ */
 .md {
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -20,14 +27,14 @@
   line-height: 1.3;
 }
 .md h1 {
-  font-size: calc(17px * var(--fs));
+  font-size: calc(16px * var(--fs));
 }
 .md h2 {
-  font-size: calc(16px * var(--fs));
+  font-size: calc(15px * var(--fs));
 }
 .md h3,
 .md h4 {
-  font-size: calc(15px * var(--fs));
+  font-size: calc(14px * var(--fs));
 }
 .md ul,
 .md ol {
@@ -52,7 +59,7 @@
 /* 行内代码：不要吃掉中文标点的间距 */
 .md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: calc(13px * var(--fs));
+  font-size: calc(12px * var(--fs));
   background: var(--bg-inline);
   border-radius: 4px;
   padding: 1px 5px;
@@ -69,7 +76,7 @@
 .md pre code {
   background: none;
   padding: 0;
-  font-size: calc(12.5px * var(--fs));
+  font-size: calc(11.5px * var(--fs));
   line-height: 1.5;
 }
 .md a {
@@ -81,7 +88,7 @@
 }
 .md table {
   border-collapse: collapse;
-  font-size: calc(13px * var(--fs));
+  font-size: calc(12px * var(--fs));
 }
 .md th,
 .md td {

@@ -14,6 +14,7 @@ import {
   firstLinePreview,
   formatTokens,
   hasBody,
+  isDetailOmitted,
   pendingLabel,
   systemLabel,
   toolView,
@@ -111,7 +112,32 @@ describe('消息渲染规则', () => {
       const view = toolView({ role: 'tool', id: 't', createdAt: 0, text })
       expect(view.size).toBe('')
       expect(view.meta).toBe('')
+      // 没正文也**不**是「被省略」（§33）：两者相反（真没输出 vs 有输出但没下发）
+      expect(view.omitted).toBe(false)
     }
+  })
+
+  /*
+   * §33：被传输档位省略的工具输出 —— 折叠态就得报「已省略」。
+   *
+   * 为什么这一条特别重要：它与「空输出」在 DOM 里长得一模一样（正文都是空串），
+   * 区分它们的**只有电脑端打的那个标记**。不看标记就必然给其中一种情形写假话。
+   */
+  it('toolView：被档位省略 → 折叠态报「已省略」，而不是装作没输出', () => {
+    const view = toolView({ role: 'tool', id: 't', createdAt: 0, toolName: 'run_command', text: '', detail: 'omitted' })
+    expect(view.omitted).toBe(true)
+    expect(view.size).toBe('已省略')
+    expect(view.meta).toBe('')
+    // 工具名照旧：这一步「调了什么」不在裁掉的范围内
+    expect(view.name).toBe('run_command')
+  })
+
+  it('isDetailOmitted：认「有没有标记」，不穷举取值（将来加「截断」等档位时旧客户端也不撒谎）', () => {
+    expect(isDetailOmitted({})).toBe(false)
+    expect(isDetailOmitted({ detail: undefined })).toBe(false)
+    expect(isDetailOmitted({ detail: 'omitted' })).toBe(true)
+    // 不认识的完整性标记：仍按「正文不完整」处理
+    expect(isDetailOmitted({ detail: 'truncated' } as unknown as { detail: 'omitted' })).toBe(true)
   })
 
   it('countLines：末尾空行不算，全空算 0 行', () => {

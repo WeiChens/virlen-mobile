@@ -6,7 +6,8 @@
  *    （点标题区 = 打开会话信息面板），右上角四个 iconbtn：通讯信号（点开通讯状态面板）、
  *    新建对话、会话列表抽屉、设置（主题 / 界面大小）；
  * 2. 链路横幅 / 暂停横幅 / 待应答卡片 / 一次性提示；
- * 3. 消息区（工具气泡带工具名、空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位）；
+ * 3. 消息区（`MessageList`）：**虚拟窗口**（只渲染视口附近的行，§34）、工具气泡带工具名、
+ *    空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位；
  * 4. 输入区（工作中变「停止」）。
  *
  * 不存在「本地方便地先把会话建出来」的路径：新对话只存在于内存（`chatStore.draft`），
@@ -16,8 +17,13 @@
  * **每帧都在变**的切片，整店订阅等于「一个 token 重渲染整页」——高频切片一律下沉到真正
  * 消费它的叶子组件（`StreamingBubble`）。新增状态时先问一句：它会每帧变吗？
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import type { MessageDTO } from 'virlen-remote'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  MESSAGE_DELETE_CAPABILITY,
+  MESSAGE_QUOTE_CAPABILITY,
+  type MessageDTO,
+  type MessageQuote,
+} from 'virlen-remote'
 import { useStore, useStoreSelector } from '../../lib/store'
 import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
@@ -25,205 +31,85 @@ import { linkStore } from '../../store/link'
 import { baseNameOf } from '../../lib/session-groups'
 import {
   contextPercent,
-  hasBody,
-  pendingLabel,
-  systemLabel,
-  toolView,
+  copyTextOf,
+  deleteMessageConfirmText,
+  firstLinePreview,
+  menuTitlePreview,
+  messageRoleLabel,
+  planMessageActions,
+  QUOTE_PREVIEW_MAX,
+  truncateCountFrom,
+  type MessageAction,
+  type MessageActionItem,
 } from '../../lib/messages'
+import { copyText } from '../../lib/clipboard'
 import { signalTone } from '../../lib/rtc-stats'
-import InteractionCard from '../../components/InteractionCard'
-import Markdown from '../../components/Markdown'
 import LinkSheet from '../components/LinkSheet'
+import MessageActionsSheet from '../components/MessageActionsSheet'
+import MessageList, { type MessageListHandle } from '../components/MessageList'
 import NewChatPanel from '../components/NewChatPanel'
 import SessionDrawer from '../components/SessionDrawer'
 import SessionInfoSheet from '../components/SessionInfoSheet'
 import SettingsSheet from '../components/SettingsSheet'
-import { IconChevronDown, IconList, IconPlus, IconSettings, IconSignal, IconSignalOff, IconTerminal } from '../components/icons'
+import { IconList, IconPlus, IconSettings, IconSignal, IconSignalOff } from '../components/icons'
 import './Chat.css'
+
+/** 一次性提示的停留时长（操作类反馈：复制成功 / 已加入引用）。 */
+const TOAST_MS = 2200
 
 /** 空消息窗口的**引用稳定**回退值（选择器不得每次新建数组，见 `useStoreSelector`）。 */
 const EMPTY_MESSAGES: MessageDTO[] = []
 
-/**
- * 单条消息。
- *
- * 两类「正文很长」的气泡**默认折叠**，点头部展开：
- * - `tool`：正文往往是整段输出（`git diff` 之类），展开会淹没对话；
- * - `system`：压缩产生的**上下文摘要**是整段历史的浓缩，动辄数屏 —— 默认展开会直接把
- *   对话流冲散，于是折叠态只留「标签 + 正文开头」，仍然告诉用户「这里压缩过一次」。
- *
- * 折叠态显示什么一律由 `lib/messages.ts` 的纯函数决定（可单测），本组件只管摆 HTML。
- */
-const MessageRow = memo(function MessageRow({ message }: { message: MessageDTO }) {
-  const [open, setOpen] = useState(false)
-
-  if (message.role === 'tool') {
-    /*
-     * 工具调用卡片（2026-10 重做）。旧版长什么样：折叠头是一个描边圆角框，里面又装一个
-     * 描边的「工具 · read_file」小标签（**框里还有框**），箭头是文字符号 `▸` 且飘在框外，
-     * 展开后正文是**另一个**圆角框硬拼在下面（两个圆角接不上，像两个组件叠着）。
-     *
-     * 现在是一张卡：头部（图标 + 等宽工具名 + 规模 + 旋转箭头）展开后在**同一张卡**里
-     * 多出一条分隔线、一段可横滑的等宽正文、一行规模小字。
-     *
-     * 折叠态的克制程度保持不变（用户 2026-10-01 拍板）：不摆输出预览，只回答
-     * 「这一步调了什么」（工具名）+「输出有多大」（行数）—— 后者不是预览，是「要不要展开」的依据。
-     */
-    const view = toolView(message)
-    return (
-      <div className="msg msg--tool">
-        <div className={`tool-card${open ? ' is-open' : ''}`}>
-          <button
-            type="button"
-            className="tool-card__head"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            title={open ? '收起工具输出' : '展开工具输出'}
-          >
-            <IconTerminal className="tool-card__icon" width={16} height={16} />
-            {/* 工具名由电脑侧解析（`buildToolNameIndex`），手机端不猜 */}
-            {view.name ? (
-              <code className="tool-card__name">{view.name}</code>
-            ) : (
-              <span className="tool-card__name tool-card__name--unknown">工具调用</span>
-            )}
-            {/* 展开后不重复规模：正文下面就有一行更全的（行数 · 字符数） */}
-            {!open && view.size && <span className="tool-card__size">{view.size}</span>}
-            <IconChevronDown className="tool-card__caret" width={15} height={15} />
-          </button>
-          {open && (
-            <>
-              {hasBody(message) ? (
-                <pre className="tool-card__body">{message.text}</pre>
-              ) : (
-                // 空输出也要说一句：空白卡片让人以为是渲染坏了（与「空正文不渲染气泡」同一条理由）
-                <p className="tool-card__empty">这次调用没有输出</p>
-              )}
-              {view.meta && <div className="tool-card__meta">{view.meta}</div>}
-            </>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (message.role === 'system') {
-    /*
-     * 压缩摘要等系统消息：**默认折叠**（真机反馈：摘要把对话流冲散）。
-     *
-     * 为什么不是「干脆不显示」：用户需要知道「这里发生过一次上下文压缩」，否则上下文占用
-     * 突然从 75% 掉到 10% 会显得莫名其妙。折叠态用「标签 + 正文开头」保住这条信息，
-     * 又不占版面；要看全文再点开。
-     */
-    const { tag, preview } = systemLabel(message)
-    return (
-      <div className="msg msg--system">
-        <button
-          type="button"
-          className="msg__fold-head"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          title={open ? '收起摘要' : '展开摘要'}
-        >
-          <span className="msg__fold-chevron" aria-hidden="true">
-            {open ? '▾' : '▸'}
-          </span>
-          <span className="msg__fold-tag">{tag}</span>
-          {/* 预览只在折叠态出现：展开后正文就在下面，再留一行摘要是重复 */}
-          {!open && preview && <span className="msg__fold-preview">{preview}</span>}
-        </button>
-        {open && <div className="msg__sys-body">{message.text}</div>}
-      </div>
-    )
-  }
-
-  // ⚠️ 空正文不渲染气泡：纯工具调用轮的 assistant 正文是空串，
-  //    渲染出来就是一个「什么都没有的消息」，只会让用户以为界面坏了
-  if (!hasBody(message)) return null
-
-  // 用户消息按纯文本渲染（与桌面一致）：用户输入什么就显示什么，不做 Markdown 解释
-  return (
-    <div className={`msg msg--${message.role}`}>
-      <div className="msg__bubble">
-        {message.role === 'assistant' ? <Markdown content={message.text} /> : message.text}
-      </div>
-    </div>
-  )
-})
-
-/**
- * StreamingBubble —— 流式正文 / 等待占位，**全页唯一订阅高频切片的组件**。
- *
- * 为什么要单独一个组件（§29）：`streaming` / `toolProgress` 是**每帧都在变**的切片。
- * 留在 `Chat` 里就要求 `Chat` 订阅整个 store → 「一个 token」重渲染整个聊天页
- * （顶栏 / 消息列表 / 输入区 / 抽屉）；下沉到这里后，每帧只重渲染这一个气泡。
- *
- * `working` / `paused` 走 props：它们只在「本轮开始 / 结束」时变，不属于高频切片。
- */
-function StreamingBubble({
-  sessionId,
-  working,
-  paused,
-  onGrow,
-}: {
-  sessionId: string
-  working: boolean
-  paused: boolean
-  /** 正文增长时回调（跟随底部）——由本组件触发，`Chat` 不必订阅 `streaming.seq`。 */
-  onGrow: () => void
-}) {
-  const streaming = useStoreSelector(chatStore, (s) => s.streaming[sessionId])
-  const toolProgress = useStoreSelector(chatStore, (s) => s.toolProgress[sessionId])
-  const seq = streaming?.seq
-
-  useEffect(() => {
-    onGrow()
-  }, [seq, onGrow])
-
-  if (streaming && hasBody(streaming)) {
-    // 流式正文：电脑侧按本端声明推**增量帧**，已在 store 里拼成完整正文（§32）
-    return (
-      <div className="msg msg--assistant">
-        <div className="msg__bubble msg__bubble--stream">
-          <Markdown content={streaming.text} streaming />
-          <span className="caret" />
-        </div>
-      </div>
-    )
-  }
-
-  // 还没有正文（思考中 / 工具执行中）：给一个明确的「在动」的占位，而不是空白
-  if (!working || paused) return null
-  return (
-    <div className="msg msg--assistant">
-      <div className="msg__bubble msg__bubble--pending">
-        <span className="dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-        {pendingLabel({ streaming: !!streaming, toolProgress })}
-      </div>
-    </div>
-  )
-}
+/** 菜单项列表的**引用稳定**空值（同上：不要在每次渲染里新建数组）。 */
+const EMPTY_ITEMS: MessageActionItem[] = []
 
 export default function Chat() {
   const conn = useStore(connectionStore)
   const [input, setInput] = useState('')
-  const [atBottom, setAtBottom] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [linkOpen, setLinkOpen] = useState(false)
   /** 外观设置（主题 / 界面大小）—— 与「会话信息」「通讯状态」是两层，入口也各自一个图标。 */
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const scrollRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * 长按菜单指向的消息 id（§36）——`null` = 没开菜单。
+   *
+   * 为什么只记 id 不记整条消息：消息会被事件刷新（`message.updated` / 定稿回填），
+   * 而菜单开着的这一秒内它也可能变 —— 存 id 再现查，拿到的总是**当下**那条。
+   */
+  const [menuId, setMenuId] = useState<string | null>(null)
+  /** 待引用的消息（发出去时一并带上，与桌面输入框的引用 chip 同一个模型）。 */
+  const [pendingQuotes, setPendingQuotes] = useState<MessageQuote[]>([])
+  /** 一次性提示（复制成功 / 已加入引用 / 操作失败）。 */
+  const [toast, setToast] = useState<string | null>(null)
+  /**
+   * 消息区的把手（`MessageList`）：滚动、跟随底部、续页都在那一层。
+   *
+   * 为什么这里要一个命令式把手：用户**发出消息**那一刻，他的眼睛在输入框上，
+   * 而列表可能还停在半截历史里 —— 必须让它落到最新一屏（旧写法是 `setAtBottom(true)`）。
+   */
+  const listRef = useRef<MessageListHandle | null>(null)
   /** 输入框：只用于自动增高（值仍然受控于 `input`）。 */
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
-  /** 前插更早消息时用于保持视口（记录「距底部距离」，渲染后还原）。 */
-  const anchorRef = useRef<number | null>(null)
-  /** 与 `atBottom` 同步的 ref（供 `onStreamGrow` 读取，避免把 `atBottom` 做成回调依赖）。 */
-  const atBottomRef = useRef(true)
+  /** 提示的自动消失计时器（连续两次操作要不让前一个先把后一个抹掉）。 */
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showToast = useCallback((text: string) => {
+    setToast(text)
+    if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => {
+      toastTimerRef.current = null
+      setToast(null)
+    }, TOAST_MS)
+  }, [])
+
+  // 卸载时清掉挂起的计时器（否则会在已卸载的页面上 setState）
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     void chatStore.loadSessions().then(() => {
@@ -281,18 +167,6 @@ export default function Chat() {
   const otherCards = interactions.filter((i) => i.sessionId && i.sessionId !== currentId)
   const can = (cap: string) => conn.capabilities.includes(cap)
 
-  // `atBottom` → ref（流式气泡通过 `onStreamGrow` 读它，不把 `atBottom` 做成回调依赖）
-  useEffect(() => {
-    atBottomRef.current = atBottom
-  }, [atBottom])
-
-  /** 流式正文增长时跟随底部（稳定引用：气泡的 effect 依赖它）。 */
-  const onStreamGrow = useCallback(() => {
-    if (!atBottomRef.current) return
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [])
-
   const statusText = compacting
     ? '压缩上下文中…'
     : working
@@ -332,11 +206,6 @@ export default function Chat() {
     if (draft.workspace) metaParts.push(baseNameOf(draft.workspace))
   }
 
-  const scrollToBottom = () => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }
-
   /**
    * 输入框自动增高（长到 CSS 的 `max-height` 为止）。
    *
@@ -350,44 +219,91 @@ export default function Chat() {
     if (el.scrollHeight > 0) el.style.height = `${el.scrollHeight}px`
   }
 
-  // 跟随底部：只在用户本来就在底部时自动跟随，否则会打断「翻历史」
-  // （流式增长那一条由 `StreamingBubble.onGrow` 触发，此处不再依赖 `streaming.seq`）
-  useEffect(() => {
-    if (atBottom) scrollToBottom()
-  }, [messages.length, currentId, cards.length, atBottom, working])
-
-  // 前插更早消息后还原视口（否则内容会「跳」到新插入的位置）
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el && anchorRef.current != null) {
-      el.scrollTop = el.scrollHeight - anchorRef.current
-      anchorRef.current = null
-    }
-  }, [messages.length])
-
-  const loadOlder = () => {
-    const el = scrollRef.current
-    if (el) anchorRef.current = el.scrollHeight - el.scrollTop
-    void chatStore.loadOlder()
-  }
-
-  const onScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    if (nearBottom !== atBottom) setAtBottom(nearBottom)
-    // 滚到顶部附近 → 自动续页（末尾的按钮是兜底：短会话滚不动时也要能点）
-    if (el.scrollTop < 60 && hasOlder && !loadingOlder) loadOlder()
-  }
-
   const submit = () => {
     const text = input
+    const quotes = pendingQuotes
     setInput('')
+    setPendingQuotes([])
     // 缩回一行：否则发完一条长消息，输入框还占着好几行高度（里面却已经空了）
     if (inputRef.current) inputRef.current.style.height = ''
-    setAtBottom(true)
+    // 发出即落到最新一屏（此刻用户的眼睛在输入框上，留在半截历史里会看不到自己刚发的消息）
+    listRef.current?.scrollToBottom()
     // 无会话时由 store 负责「先创建再发送」（发送这一刻才创建）
-    void chatStore.send(text)
+    void chatStore.send(text, quotes)
+  }
+
+  /* ─────────────────── §36 长按菜单 ─────────────────── */
+
+  /**
+   * 长按某条消息（由 `MessageList` 逐行上报）。
+   *
+   * ⚠️ `useCallback` 是必需的（不是优化）：行组件是 `memo` 的，回调每次换引用会让
+   * 列表里所有可见行白白重渲染（§29 的同一条纪律）。
+   */
+  const onLongPress = useCallback((id: string) => setMenuId(id), [])
+
+  /** 菜单指向的消息 —— 现查而不是存快照，见 `menuId` 的说明。 */
+  const menuMessage = menuId ? messages.find((m) => m.id === menuId) : undefined
+  /*
+   * 菜单里有哪些项、哪项为什么不可点：全部由纯函数决定（`planMessageActions`）。
+   * 三个事实从外面喂进去：电脑端有没有这两项能力（旧电脑会静默丢引文 / 没有删消息方法）、
+   * 会话是不是正在回复（电脑侧会以 E_BUSY 拒删）。
+   */
+  const menuItems = menuMessage
+    ? planMessageActions(menuMessage, {
+        canQuote: can(MESSAGE_QUOTE_CAPABILITY),
+        canDelete: can(MESSAGE_DELETE_CAPABILITY),
+        busy: working,
+      })
+    : EMPTY_ITEMS
+
+  const removeQuote = useCallback((messageId: string) => {
+    setPendingQuotes((prev) => prev.filter((q) => q.messageId !== messageId))
+  }, [])
+
+  /**
+   * 选中菜单项。
+   *
+   * 先把菜单收起再执行：删除会弹 `confirm`，面板留在下面会压在弹框底下（桌面 `ContextMenu`
+   * 也是「先关再执行」的同一条约定）。
+   */
+  const runMenuAction = (action: MessageAction) => {
+    const message = menuMessage
+    setMenuId(null)
+    if (!message) return
+
+    if (action === 'copy') {
+      void copyText(copyTextOf(message)).then((ok) => {
+        // 失败也要说 —— 「点了没反应」比「复制失败」难查得多（非安全上下文下 clipboard 是 undefined）
+        showToast(ok ? '已复制' : '复制失败（浏览器未授权剪贴板）')
+      })
+      return
+    }
+
+    if (action === 'quote') {
+      // 取值域由 `planMessageActions` 卡住（只有 user / assistant 会给这一项），这里只做收窄
+      if (message.role !== 'user' && message.role !== 'assistant') return
+      // 先把快照建好再进更新函数：闭包里的收窄会丢（TS 不会把外层收窄带进回调）
+      const quote: MessageQuote = {
+        messageId: message.id,
+        role: message.role,
+        text: message.text,
+      }
+      setPendingQuotes((prev) =>
+        prev.some((q) => q.messageId === quote.messageId) ? prev : [...prev, quote],
+      )
+      showToast('已加入引用，发消息时会一并带上')
+      return
+    }
+
+    // ── 删除（截断，不可逆）：先报清楚会删掉多少条 ──
+    if (!currentId) return
+    const count = truncateCountFrom(messages, message.id)
+    if (count <= 0) return
+    if (!window.confirm(deleteMessageConfirmText(count))) return
+    void chatStore.deleteMessage(currentId, message.id).then((ok) => {
+      if (!ok) showToast('删除失败（电脑侧拒绝）')
+    })
   }
 
   const stop = () => {
@@ -396,7 +312,6 @@ export default function Chat() {
 
   const startNewChat = () => {
     chatStore.newChat()
-    setAtBottom(true)
     setDrawerOpen(false)
   }
 
@@ -537,93 +452,87 @@ export default function Chat() {
       {!currentId ? (
         <NewChatPanel />
       ) : (
-        <div className="chat__messages-wrap">
-          <div className="chat__messages" ref={scrollRef} onScroll={onScroll}>
-            {hasOlder && (
-              <button
-                type="button"
-                className="chat__load-older"
-                disabled={loadingOlder}
-                onClick={loadOlder}
-              >
-                {loadingOlder ? '加载中…' : '加载更早的消息'}
-              </button>
-            )}
-            {loadingMessages && <p className="chat__loading">加载消息…</p>}
-            {!loadingMessages && messages.length === 0 && (
-              <p className="chat__empty">这个会话还没有消息</p>
-            )}
-            {messages.map((m) => (
-              <MessageRow key={m.id} message={m} />
-            ))}
-            {/* 流式气泡自己订阅高频切片（§29）：Chat 不再因「一个 token」重渲染 */}
-            <StreamingBubble
-              sessionId={currentId}
-              working={working}
-              paused={paused}
-              onGrow={onStreamGrow}
-            />
-            {error && <p className="chat__error">{error}</p>}
-            {/*
-              待应答卡片**贴底**渲染：渲染在顶部时，滚在底部的用户察觉不到请求。
-            */}
-            {cards.length > 0 && (
-              <div className="chat__cards">
-                {cards.map((i) => (
-                  <InteractionCard key={i.interactionId} interaction={i} />
-                ))}
-              </div>
-            )}
-          </div>
-          {!atBottom && (
-            <button
-              type="button"
-              className="chat__to-bottom"
-              title="回到底部"
-              aria-label="回到底部"
-              onClick={() => {
-                setAtBottom(true)
-                scrollToBottom()
-              }}
-            >
-              <IconChevronDown width={18} height={18} />
-            </button>
-          )}
-        </div>
+        /*
+          消息区整块下沉到 `MessageList`（§34）：滚动容器、虚拟窗口、前插锚定、贴底跟随
+          全在那一层；本页只给它数据 + 「加载更早一页」这个动作。
+
+          ⚠️ `key={currentId}` 是**故意的**：换会话 = 重新挂载消息区 —— 滚动位置、
+          折叠态、以及虚拟列表的内部记账（初始落点在底部的那条路径）都不该从上一个会话
+          带过来；否则新会话的首帧会拿着旧会话的滚动位置算窗口（一帧白屏 / 错位）。
+        */
+        <MessageList
+          key={currentId}
+          ref={listRef}
+          sessionId={currentId}
+          messages={messages}
+          working={working}
+          paused={paused}
+          hasOlder={hasOlder}
+          loadingOlder={loadingOlder}
+          loadingMessages={loadingMessages}
+          error={error}
+          cards={cards}
+          onLoadOlder={() => void chatStore.loadOlder()}
+          onLongPress={onLongPress}
+        />
       )}
 
       <footer className="chat__input">
-        <textarea
-          className="chat__textarea"
-          ref={inputRef}
-          rows={1}
-          placeholder={currentId ? '发消息给 Agent…' : '发消息即创建新会话…'}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value)
-            autoGrow(e.target)
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-        />
-        {working && can('session.cancel') ? (
-          <button type="button" className="btn btn--danger btn--small" onClick={stop}>
-            停止
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn btn--primary btn--small"
-            disabled={!input.trim() || (!currentId && !can('session.create'))}
-            onClick={submit}
-          >
-            发送
-          </button>
+        {/* 待引用（§36）：与桌面输入框的引用 chip 同一个模型——发出去之前看得见、删得掉 */}
+        {pendingQuotes.length > 0 && (
+          <div className="chat__quotes">
+            {pendingQuotes.map((quote) => (
+              <div className="quote-chip" key={quote.messageId}>
+                <span className="quote-chip__who">{messageRoleLabel(quote.role)}</span>
+                <span className="quote-chip__text">
+                  {firstLinePreview(quote.text, QUOTE_PREVIEW_MAX)}
+                </span>
+                <button
+                  type="button"
+                  className="quote-chip__remove"
+                  aria-label="移除引用"
+                  onClick={() => removeQuote(quote.messageId)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
         )}
+        <div className="chat__input-row">
+          <textarea
+            className="chat__textarea"
+            ref={inputRef}
+            rows={1}
+            placeholder={currentId ? '发消息给 Agent…' : '发消息即创建新会话…'}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value)
+              autoGrow(e.target)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          />
+          {working && can('session.cancel') ? (
+            <button type="button" className="btn btn--danger btn--small" onClick={stop}>
+              停止
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--primary btn--small"
+              /* 只引用不写正文也允许发（与桌面同口径：电脑侧会补「请针对引用的消息回复」） */
+              disabled={(!input.trim() && pendingQuotes.length === 0) || (!currentId && !can('session.create'))}
+              onClick={submit}
+            >
+              发送
+            </button>
+          )}
+        </div>
       </footer>
 
       <SessionDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
@@ -632,6 +541,23 @@ export default function Chat() {
       )}
       {linkOpen && <LinkSheet onClose={() => setLinkOpen(false)} />}
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
+
+      {/* 长按菜单（§36）：只在有可展示的项时打开 —— 空面板比不开面板更让人困惑 */}
+      {menuMessage && menuItems.length > 0 && (
+        <MessageActionsSheet
+          role={menuMessage.role}
+          preview={menuTitlePreview(menuMessage)}
+          items={menuItems}
+          onPick={runMenuAction}
+          onClose={() => setMenuId(null)}
+        />
+      )}
+
+      {toast && (
+        <div className="chat__toast" role="status">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }

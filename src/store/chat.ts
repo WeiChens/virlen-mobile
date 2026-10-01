@@ -9,17 +9,20 @@
  */
 import {
   BridgeError,
+  MESSAGE_DELETE_CAPABILITY,
   type AnswerAction,
   type ContextInfoDTO,
   type Endpoint,
   type HostEvents,
   type InteractionDTO,
   type MessageDTO,
+  type MessageQuote,
   type ModelProviderDTO,
   type SessionSummaryDTO,
   type WorkspaceOptionDTO,
 } from 'virlen-remote'
 import { Store } from '../lib/store'
+import { dedupeMessages, insertionIndexFor } from '../lib/messages'
 import { getCaller, onEndpointReady } from '../api/active'
 
 export interface StreamingState {
@@ -144,6 +147,14 @@ class ChatStore extends Store<ChatState> {
    */
   private resyncingStreams = new Set<string>()
 
+  /**
+   * 已经报过「窗口含重复 id」的会话 —— 每会话只报一次（见 `normalizeWindow`）。
+   *
+   * 这是**诊断**而不是状态：重复 id 是电脑侧数据的问题（本机已去重），报在控制台给开发/排查用，
+   * 不弹给用户 —— 用户什么也做不了，弹一个对话框只会吓人。
+   */
+  private dupWarned = new Set<string>()
+
   constructor() {
     super(INITIAL)
   }
@@ -159,7 +170,30 @@ class ChatStore extends Store<ChatState> {
   reset(): void {
     this.capabilities = []
     this.contextEventSeq = {}
+    this.dupWarned.clear()
     this.setState({ ...INITIAL })
+  }
+
+  /**
+   * 把电脑侧给的**窗口级数据**归一化（按 id 去重）—— `openSession` / `loadOlder` 共用的唯一入口。
+   *
+   * 为何要在这里做（而不是只靠合并时判重）：本地两条写入通道（`message.added` 按 id 判重、
+   * `loadOlder` 按 `known` 过滤）只能挡住「与本地重复」，**挡不住电脑侧那一页自带重复**。
+   * 而重复 id 会直接弄坏虚拟列表：库的锚点解析取**第一个**匹配 key 的那种项，一条重复就能让
+   * 补偿算到错的位置（真机表现：「加载更早的消息」后 `scrollTop` 没变、屏幕上却换了一屏内容）。
+   * 详细来源分析见 `lib/messages.ts::dedupeMessages`。
+   */
+  private normalizeWindow(sessionId: string, incoming: readonly MessageDTO[]): MessageDTO[] {
+    const unique = dedupeMessages(incoming)
+    if (unique.length === incoming.length || this.dupWarned.has(sessionId)) return unique
+    this.dupWarned.add(sessionId)
+    console.warn(
+      `[virlen] 电脑侧下发的消息窗口含重复 id：会话 ${sessionId} 的 ${incoming.length} 条里有 ` +
+        `${incoming.length - unique.length} 条重复，已在本机去重（保留先出现的那一条）。\n` +
+        '重复的 key 会让虚拟列表的锚点落到错误的那一条上（表现为「加载更早的消息」后视口内容错位）。\n' +
+        '请在电脑侧检查窗口合并：`sessionStore.loadOlderMessages` 的前插（它没有按 id 去重）。',
+    )
+    return unique
   }
 
   /** 收起一次性提示（如「该请求已在电脑上处理」）。 */
@@ -304,9 +338,10 @@ class ChatStore extends Store<ChatState> {
         .call('host.session.subscribe', { sessionId })
         .catch(() => {})
       const page = await getCaller().call('host.session.messages', { sessionId })
+      const loaded = this.normalizeWindow(sessionId, page.messages)
       this.setState((s) => ({
         ...s,
-        messages: { ...s.messages, [sessionId]: page.messages },
+        messages: { ...s.messages, [sessionId]: loaded },
         hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
         cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
         loadingMessages: false,
@@ -343,10 +378,15 @@ class ChatStore extends Store<ChatState> {
     }
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, quotes: MessageQuote[] = []): Promise<void> {
     const snapshot = this.getSnapshot()
     const trimmed = text.trim()
-    if (!trimmed) return
+    /*
+     * 只引用、不写正文也允许发（§36）：与桌面**同一条口径** —— 电脑端会在正文为空时
+     * 补一句「请针对引用的消息回复」（`buildUserContent`）。若这里拦下来，用户引用了
+     * 一条消息却发不出去，会以为「引用坏了」。
+     */
+    if (!trimmed && quotes.length === 0) return
     try {
       let sessionId = snapshot.currentSessionId
       if (!sessionId) {
@@ -359,7 +399,14 @@ class ChatStore extends Store<ChatState> {
       //    都推不回来，界面表现为「标题更新了，但会话没有任何记录」。两条路径都满足：
       //    新会话走 `createSessionFromDraft()`（内部 `openSession()` 已 await 订阅应答），
       //    已有会话来自 `openSession()` / `resync()`；电脑侧另有「自建会话自动订阅」兜底。
-      await getCaller().call('host.session.send', { sessionId, text: trimmed })
+      //
+      // ⚠️ `quotes` 是可选字段：无引用时不带（不在线上传一个空数组，也不让旧电脑端
+      //    多看到一个它不认识的字段）
+      await getCaller().call('host.session.send', {
+        sessionId,
+        text: trimmed,
+        ...(quotes.length > 0 ? { quotes } : {}),
+      })
     } catch (err) {
       this.setState((s) => ({ ...s, error: messageOf(err) }))
     }
@@ -434,18 +481,19 @@ class ChatStore extends Store<ChatState> {
         sessionId,
         ...(cursor != null ? { fromRowid: cursor } : {}),
       })
-      this.setState((s) => {
-        const list = s.messages[sessionId] ?? []
-        const known = new Set(list.map((m) => m.id))
-        const older = page.messages.filter((m) => !known.has(m.id))
-        return {
-          ...s,
-          loadingOlder: false,
-          messages: { ...s.messages, [sessionId]: [...older, ...list] },
-          hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
-          cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
-        }
-      })
+      const local = this.getSnapshot().messages[sessionId] ?? []
+      const known = new Set(local.map((m) => m.id))
+      // ⚠️ 两道去重缺一不可：`known` 挡「与本地重复」（推送通道先到的那份），
+      //    `normalizeWindow` 挡「服务端那一页自带的重复」（见 `dedupeMessages` 的注释）。
+      const older = page.messages.filter((m) => !known.has(m.id))
+      const merged = this.normalizeWindow(sessionId, [...older, ...local])
+      this.setState((s) => ({
+        ...s,
+        loadingOlder: false,
+        messages: { ...s.messages, [sessionId]: merged },
+        hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
+        cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
+      }))
     } catch (err) {
       this.setState((s) => ({ ...s, loadingOlder: false, error: messageOf(err) }))
     }
@@ -500,6 +548,34 @@ class ChatStore extends Store<ChatState> {
       await this.loadSessions()
     } catch (err) {
       this.setState((s) => ({ ...s, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 删除一条消息**及其之后的全部消息**（截断，§36）—— **不可逆**。
+   *
+   * @returns 是否被电脑侧接受（调用方据此决定要不要收起菜单）
+   *
+   * 与 `deleteSession` / `compressContext` 同形：RPC 必带 `confirm: true`（**电脑侧独立校验**，
+   * 手机端那个确认弹窗不算数）。
+   *
+   * ⚠️ 本地**不先删**：刷新全部交给 `host.event.session.messages.reset` → `reloadMessages`
+   * （重拉窗口天然幂等）。先删一次会与事件竞争出「消息闪没又回来」，而且本地删无法处理
+   * 「电脑侧拒绝了」这条路径。
+   */
+  async deleteMessage(sessionId: string, messageId: string): Promise<boolean> {
+    // 旧电脑端没有这个方法：UI 本就不显示入口（能力驱动显隐），这里是纵深防御
+    if (!this.can(MESSAGE_DELETE_CAPABILITY)) return false
+    try {
+      await getCaller().call('host.session.message.delete', {
+        sessionId,
+        messageId,
+        confirm: true,
+      })
+      return true
+    } catch (err) {
+      this.setState((s) => ({ ...s, error: messageOf(err) }))
+      return false
     }
   }
 
@@ -713,7 +789,15 @@ class ChatStore extends Store<ChatState> {
           if (list.some((m) => m.id === e.message.id)) return s
           const streaming = { ...s.streaming }
           if (streaming[e.sessionId]?.messageId === e.message.id) streaming[e.sessionId] = undefined
-          return { ...s, messages: { ...s.messages, [e.sessionId]: [...list, e.message] }, streaming }
+          /*
+           * ⚠️ 插到**时间序正确的位置**，不是无脑追加（§37）：电脑侧连「向前回补的更早
+           * 历史」也走这个事件（它自己的窗口前插了那一页 → 按 id 做 diff 时它们看着就是
+           * 「新出现的消息」）。一律追加的话，用户点「加载更早的消息」后，历史会出现在
+           * **最下面**（真机反馈）。判据与完整说明见 `lib/messages.ts::insertionIndexFor`。
+           */
+          const at = insertionIndexFor(list, e.message)
+          const next = [...list.slice(0, at), e.message, ...list.slice(at)]
+          return { ...s, messages: { ...s.messages, [e.sessionId]: next }, streaming }
         })
         break
       }

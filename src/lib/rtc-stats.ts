@@ -16,8 +16,18 @@
  *
  * 本文件仍是**纯函数**（喂普通对象数组即可，不需要真实 WebRTC）—— 真实 WebRTC 跑不进 CI，
  * 所以「口径」由共享包自己的单测钉死。
+ *
+ * §33 起它还带着「**传输档位**」的展示文案（`tierOf` / `tierText` / `tierHint`）：档位同样由
+ * 链路类型推导（口径仍只一份），而「手机上工具输出为什么是空的」这句话只有在这里能拼对。
  */
-import { classifyLinkKind, findCandidate, pickCandidatePair, type LinkKind } from 'virlen-remote'
+import {
+  classifyLinkKind,
+  findCandidate,
+  pickCandidatePair,
+  transferTierOf,
+  type LinkKind,
+  type TransferTier,
+} from 'virlen-remote'
 
 /**
  * 通讯通道类型：`direct` = P2P 直连；`relay` = TURN 中继；`unknown` = 没拿到结论。
@@ -163,6 +173,40 @@ export function pathHint(path: LinkPath): string {
   if (path === 'direct') return '手机与电脑之间直接传输，延迟最低。'
   if (path === 'relay') return '字节要经 TURN 服务器转发：能连上，但更慢、也更吃流量。'
   return '还没拿到结论（链路刚建立或正在重协商）。'
+}
+
+/* ────────────────────────── 传输档位（§33）────────────────────────── */
+
+/**
+ * 通道类型 → **传输档位**（`full` 完整 / `lean` 精简）。
+ *
+ * 口径在共享包（`transferTierOf`，电脑端也读同一份），本函数只是把它转出给 UI ——
+ * 于是「手机面板写精简、电脑按完整发」这种自相矛盾在类型层就无处可藏。
+ */
+export function tierOf(path: LinkPath): TransferTier {
+  return transferTierOf(path)
+}
+
+/** 档位 → 短文案（面板上「档位」那一行）。 */
+export function tierText(tier: TransferTier): string {
+  return tier === 'lean' ? '精简（只传主要内容）' : '完整（含工具输出）'
+}
+
+/**
+ * 档位 → 一句解释（面板里那句「工具输出为什么是空的」）。
+ *
+ * `hostSupports` = 电脑端在 `hello` 应答的能力集里列出了 `message.detail`（= 它支持按档位裁剪）。
+ * 为 `false` 时**不能说「已精简」** —— 那台电脑端会把全部内容照常发下来（它根本没裁剪），
+ * 只是本端面板没有别的依据；「电脑端不支持」与「真的精简了」必须分开说，不能混成一句。
+ */
+export function tierHint(tier: TransferTier, hostSupports: boolean): string {
+  if (!hostSupports) {
+    return '当前电脑端不支持传输档位（未声明 message.detail 能力）：所有内容（包括工具输出）照常下发。升级电脑端后，中继链路会自动改为只传主要内容。'
+  }
+  if (tier === 'lean') {
+    return '本链路走 TURN 中继或通道类型未判定：只下发主要内容 —— 工具调用的输出正文不下发（省的是手机流量），工具卡片上会标「已省略」。切回直连后重开会话可拉取全文。'
+  }
+  return '本链路为 P2P 直连：正文与工具输出都完整下发，不省任何东西。'
 }
 
 /**

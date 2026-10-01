@@ -1,0 +1,123 @@
+/* MessageActionsSheet —— 长按气泡弹出的动作面板（贴底，§36）
+
+   外壳沿用 `.sheet__backdrop`（定义在 SessionInfoSheet.css，本文件**不重复定义**，
+   否则与它跨文件同权重覆盖 —— `css-cascade.test.ts` 会直接报）。
+   面板本身用 `.actpanel*` 前缀：动作面板与「会话信息」不是同一种东西
+   （它没有正文区、只有几个等宽按钮），共用 `.sheet` 会被它的 max-height / 滚动规则牵连。 */
+
+.actpanel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -8px 24px var(--shadow);
+  animation: actpanel-in 0.16s ease-out;
+  /* Home Indicator 压在面板最后一行上：面板本身让出这一条 */
+  padding-bottom: var(--safe-bottom);
+}
+
+/* 自己定义入场动画，不复用 SessionInfoSheet.css 的 `sheet-in`：
+   本文件只依赖 `.sheet__backdrop`，其余自成一体（跨文件依赖越少，改一处越不容易漏）。 */
+@keyframes actpanel-in {
+  from {
+    transform: translateY(16px);
+    opacity: 0.5;
+  }
+}
+
+.actpanel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--border-2);
+}
+
+/* 「在操作哪条消息」：发送方 + 单行预览（预览可能被挤掉，发送方永远在） */
+.actpanel__target {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.actpanel__who {
+  flex: none;
+  font-size: calc(13px * var(--fs));
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.actpanel__preview {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(12.5px * var(--fs));
+  color: var(--fg-muted);
+}
+.actpanel__close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(32px * var(--fs));
+  height: calc(32px * var(--fs));
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.actpanel__items {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 14px;
+  gap: 6px;
+}
+.actpanel__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 按钮：整行可点（手机上拇指按不准小按钮），触控目标下限与 .btn 一致 */
+.actpanel__btn {
+  width: 100%;
+  min-height: calc(44px * var(--fs));
+  padding: calc(10px * var(--fs)) calc(12px * var(--fs));
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg);
+  font-size: calc(15px * var(--fs));
+  text-align: left;
+  cursor: pointer;
+}
+.actpanel__btn:active {
+  background: var(--bg-btn);
+}
+.actpanel__btn--danger {
+  color: var(--danger);
+}
+/* 灰显而不是隐藏：用户长按了却看不到「删除」，只会以为功能没了；
+   配上 `.actpanel__hint` 说明原因（会话正在回复中 / 正文被省略）才是诚实做法。 */
+.actpanel__btn.is-disabled {
+  color: var(--fg-muted);
+  cursor: default;
+}
+.actpanel__btn.is-disabled:active {
+  background: transparent;
+}
+.actpanel__hint {
+  margin: 0 0 4px;
+  padding: 0 calc(12px * var(--fs));
+  font-size: calc(12px * var(--fs));
+  color: var(--fg-muted);
+}
