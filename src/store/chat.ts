@@ -10,6 +10,7 @@
 import {
   BridgeError,
   MESSAGE_DELETE_CAPABILITY,
+  type AgentOptionDTO,
   type AnswerAction,
   type ContextInfoDTO,
   type Endpoint,
@@ -48,6 +49,27 @@ export interface ChatState {
    * 正文以为卡死。只带工具名与已累积字符数，**不含参数内容**。
    */
   toolProgress: Record<string, { name: string; chars: number } | undefined>
+  /**
+   * 各会话最近一次的**电脑侧错误**（`RuntimeDTO.error`，随 `runtime.changed` 下发）。
+   *
+   * ⚠️ 与上面的 `error` 是**两回事**，别看错：
+   * - `error`：**本端**（手机）请求失败 / 链路报错的瞬时提示；
+   * - `sessionError`：**电脑侧**的会话说出来的话 —— 引擎跑挂（API 401 / 上下文超限 /
+   *   工具报错）时，电脑把原因写进会话运行时并推下来。它属于**会话的状态**，
+   *   打开会话就该看到（不是只在那一次推送时闪一下）。
+   *
+   * 字段缺失 = 电脑侧那边已经没有这条错误（用户在电脑上关掉了 / 重新发送时清了）。
+   */
+  sessionError: Record<string, string | undefined>
+  /**
+   * 已被用户点掉的那条错误**文本**（会话 → 文本）：同一个错误不重复弹。
+   *
+   * 为何按文本而不是布尔：手机**不能**清电脑侧的错误（协议里没有这条 RPC），本地「知道了」
+   * 只对**那一条**生效 —— 而电脑侧的运行时快照会一遍遍补推（每次重开这个会话都会带回来）。
+   * 布尔标记会让同一句话永远弹不出来；按文本比对时，换一条**不同**的错误立刻重新出现
+   * （电脑侧先清后报时，`applyEvent` 还会主动把这个标记撤掉，见那里的注释）。
+   */
+  dismissedError: Record<string, string | undefined>
   /** 各会话的上下文占用（快照 `host.session.context` + 增量 `context.changed`）。 */
   context: Record<string, ContextInfoDTO | undefined>
   streaming: Record<string, StreamingState | undefined>
@@ -72,6 +94,14 @@ export interface ChatState {
   workspaces: WorkspaceOptionDTO[]
   loadingWorkspaces: boolean
   /**
+   * 新建会话可选的 Agent（候选集同样由电脑侧给出；受 `session.agent` 能力门控）。
+   *
+   * 旧电脑端没有 `host.agent.list` → 此数组恒为空、`NewChatPanel` 也不渲染这一节
+   * （能力驱动显隐，§3.5「没有的东西不显示」）。
+   */
+  agents: AgentOptionDTO[]
+  loadingAgents: boolean
+  /**
    * 「新对话」的本地选择（尚未在电脑侧创建任何会话）。
    *
    * ⚠️ 用户拍板：点「新对话」**不**创建会话 —— 只在发送第一条消息时才创建（§22.3）。
@@ -80,8 +110,16 @@ export interface ChatState {
   draft: DraftSelection
 }
 
-/** 「新对话」的三项选择（模型服务 / 模型 / 工作目录；缺省 = 由电脑侧默认值决定）。 */
+/** 「新对话」的几项选择（Agent / 模型服务 / 模型 / 工作目录；缺省 = 由电脑侧默认值决定）。 */
 export interface DraftSelection {
+  /**
+   * 归属 Agent（缺省 = 电脑侧默认 Agent）。
+   *
+   * ⚠️ 与桌面同语义（`chat-view.tsx` 的 `selectedAgentId`）：**换 Agent 会清掉模型与工作目录**，
+   * 让所选 Agent 的默认值生效 —— 否则会出现「换了代码评审员，却还用着上一个 Agent 挑的模型」
+   * 这种当事人都解释不清的组合。
+   */
+  agentId?: string
   providerConfigId?: string
   modelId?: string
   workspace?: string
@@ -95,6 +133,8 @@ const INITIAL: ChatState = {
   paused: {},
   compacting: {},
   toolProgress: {},
+  sessionError: {},
+  dismissedError: {},
   context: {},
   streaming: {},
   hasMoreMessages: {},
@@ -107,6 +147,8 @@ const INITIAL: ChatState = {
   loadingModels: false,
   workspaces: [],
   loadingWorkspaces: false,
+  agents: [],
+  loadingAgents: false,
   draft: {},
 }
 
@@ -201,6 +243,22 @@ class ChatStore extends Store<ChatState> {
     this.setState((s) => ({ ...s, notice: undefined }))
   }
 
+  /**
+   * 收起当前会话的错误提示（**只作用于本端**）。
+   *
+   * 为何不发 RPC 去清电脑侧：协议里没有「清除会话错误」的方法，而且这条错误的权威在电脑侧
+   * ——用户可能已经在电脑上点掉了，或者重新发送时被清掉（那时会推一帧不带 `error` 的运行时），
+   * 本地缓存会跟着清。所以这里只记「这条文本我读过了」。
+   */
+  dismissSessionError(sessionId: string): void {
+    const text = this.getSnapshot().sessionError[sessionId]
+    if (!text) return
+    this.setState((s) => ({
+      ...s,
+      dismissedError: { ...s.dismissedError, [sessionId]: text },
+    }))
+  }
+
   async loadSessions(): Promise<void> {
     this.setState((s) => ({ ...s, loadingSessions: true, error: undefined }))
     try {
@@ -211,7 +269,7 @@ class ChatStore extends Store<ChatState> {
         loadingSessions: false,
         // 「新对话」的默认选择：首次拿到列表时用**最近一个会话**的模型 / 目录（
         // 与桌面「上次用什么，新建就默认用什么」同思路）；用户显式改过就不再覆盖
-        draft: s.draft.providerConfigId || s.draft.workspace ? s.draft : seedDraft(sessions),
+        draft: s.draft.providerConfigId || s.draft.workspace || s.draft.agentId ? s.draft : seedDraft(sessions),
       }))
     } catch (err) {
       this.setState((s) => ({ ...s, loadingSessions: false, error: messageOf(err) }))
@@ -243,6 +301,16 @@ class ChatStore extends Store<ChatState> {
   /** 选定「新对话」的工作目录（只在无会话时可用；已有会话的工作目录不可改）。 */
   setDraftWorkspace(workspace: string): void {
     this.setState((s) => ({ ...s, draft: { ...s.draft, workspace } }))
+  }
+
+  /**
+   * 选定「新对话」的 Agent（只在无会话时可用）。
+   *
+   * 换 Agent **一并清掉模型与工作目录**（只留 `agentId`）—— 让所选 Agent 的默认值生效，
+   * 与桌面 `chat-view` 那条 effect 同语义。重复选同一个 = 无操作（不抹掉用户已经挑好的值）。
+   */
+  setDraftAgent(agentId: string | undefined): void {
+    this.setState((s) => (s.draft.agentId === agentId ? s : { ...s, draft: agentId ? { agentId } : {} }))
   }
 
   /** 拉取可切换的模型（白名单投影；已缓存时直接返回，`force` 可刷新）。 */
@@ -278,6 +346,35 @@ class ChatStore extends Store<ChatState> {
       }))
     } catch (err) {
       this.setState((s) => ({ ...s, loadingWorkspaces: false, error: messageOf(err) }))
+    }
+  }
+
+  /**
+   * 拉取「新建会话可选的 Agent」（候选集由电脑侧给出）。
+   *
+   * 与 `loadWorkspaces` 同一条纪律：草稿里的 `agentId` 必须仍在候选集内 ——
+   * 电脑侧删掉那个 Agent 后，旧选择会变成一条注定 `E_BAD_REQUEST` 的请求。
+   * 这里**直接清空**（回落电脑侧默认 Agent），而不是随便挑一个顶上：
+   * 静默换成另一个 Agent 比让用户重选一次危险得多。
+   */
+  async loadAgents(force = false): Promise<void> {
+    if (!this.can('session.agent')) return
+    const snapshot = this.getSnapshot()
+    if (!force && (snapshot.agents.length > 0 || snapshot.loadingAgents)) return
+    this.setState((s) => ({ ...s, loadingAgents: true }))
+    try {
+      const { agents } = await getCaller().call('host.agent.list', {})
+      this.setState((s) => ({
+        ...s,
+        agents,
+        loadingAgents: false,
+        draft:
+          s.draft.agentId && !agents.some((a) => a.id === s.draft.agentId)
+            ? { ...s.draft, agentId: undefined }
+            : s.draft,
+      }))
+    } catch (err) {
+      this.setState((s) => ({ ...s, loadingAgents: false, error: messageOf(err) }))
     }
   }
 
@@ -428,6 +525,12 @@ class ChatStore extends Store<ChatState> {
       ...(draft.workspace ? { workspace: draft.workspace } : {}),
       ...(draft.providerConfigId ? { providerConfigId: draft.providerConfigId } : {}),
       ...(draft.modelId ? { modelId: draft.modelId } : {}),
+      /*
+       * Agent：**必须由能力位拦住**。旧电脑端收到这个字段会当普通未知字段静默丢掉 ——
+       * 用户以为建的是「代码评审员」，实际建的是默认 Agent；这种假绿灯比报错难发现得多
+       * （与 `message.quote` 同一条教训，见共享包 0.5.0 的说明）。
+       */
+      ...(draft.agentId && this.can('session.agent') ? { agentId: draft.agentId } : {}),
     })
     // 订阅必须在 `send` 之前落地（`openSession` 会 await 到订阅应答）
     await this.openSession(sessionId)
@@ -816,13 +919,33 @@ class ChatStore extends Store<ChatState> {
       }
       case 'host.event.session.runtime.changed': {
         const e = payload as HostEvents['host.event.session.runtime.changed']
-        this.setState((s) => ({
-          ...s,
-          working: { ...s.working, [e.sessionId]: e.runtime.working },
-          paused: { ...s.paused, [e.sessionId]: e.runtime.paused === true },
-          compacting: { ...s.compacting, [e.sessionId]: e.runtime.compacting === true },
-          toolProgress: { ...s.toolProgress, [e.sessionId]: e.runtime.toolProgress ?? undefined },
-        }))
+        this.setState((s) => {
+          const error = e.runtime.error || undefined
+          const prev = s.sessionError[e.sessionId]
+          return {
+            ...s,
+            working: { ...s.working, [e.sessionId]: e.runtime.working },
+            paused: { ...s.paused, [e.sessionId]: e.runtime.paused === true },
+            compacting: { ...s.compacting, [e.sessionId]: e.runtime.compacting === true },
+            toolProgress: { ...s.toolProgress, [e.sessionId]: e.runtime.toolProgress ?? undefined },
+            /*
+             * 电脑侧的错误（2026-10 真机反馈：过去这里只取了 working / paused / compacting /
+             * toolProgress，`runtime.error` 被静默丢掉 —— 会话报错时手机端一个字都看不到）。
+             * 字段缺失 = 电脑侧已经没有这条错误 → 本地跟着清（权威在电脑侧）。
+             */
+            sessionError: { ...s.sessionError, [e.sessionId]: error },
+            /*
+             * 「无 → 有」= **新的一次错误**（电脑侧在重新发送时会先把上一条清掉）→
+             * 撤掉本地的「已读」标记，让**同内容**的错误也能重新弹出来。
+             * 只有值没变时才保留标记 —— 否则每次重开会话，那一帧运行时快照都会把用户
+             * 刚关掉的提示又弹回来（同一件事反复提醒 = 提醒失效）。
+             */
+            dismissedError:
+              prev === undefined && error !== undefined
+                ? { ...s.dismissedError, [e.sessionId]: undefined }
+                : s.dismissedError,
+          }
+        })
         break
       }
       case 'host.event.interaction.requested': {
@@ -880,10 +1003,11 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-/** 「新对话」的默认选择：最近一个会话的模型 / 工作目录（拿不到就留空，由电脑侧默认值决定）。 */
+/** 「新对话」的默认选择：最近一个会话的 Agent / 模型 / 工作目录（拿不到就留空，由电脑侧默认值决定）。 */
 function seedDraft(sessions: SessionSummaryDTO[]): DraftSelection {
   const latest = sessions[0]
   return {
+    ...(latest?.agentId ? { agentId: latest.agentId } : {}),
     ...(latest?.providerConfigId ? { providerConfigId: latest.providerConfigId } : {}),
     ...(latest?.modelId ? { modelId: latest.modelId } : {}),
     ...(latest?.workspace ? { workspace: latest.workspace } : {}),

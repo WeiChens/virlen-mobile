@@ -145,6 +145,36 @@
 .chat__paused-text {
   flex: 1;
 }
+/*
+  会话错误横幅（电脑侧 `RuntimeDTO.error`）。
+  与 `.chat__paused` / `.chat__notice` 共用同一套盒模型 —— 三条横幅可能同时出现
+  （错误 + 暂停 + 一次性提示），间距 / 圆角 / 字号必须是一个家族，不能各写一套。
+*/
+.chat__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-3);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--fg-3);
+  font-size: calc(13px * var(--fs));
+}
+.chat__banner-text {
+  flex: 1;
+  /* 错误正文往往是 provider 原文（一长串英文 / 带 URL）：必须能折行、能选中复制 */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.chat__banner--error {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
 .chat__cards {
   display: flex;
   flex-direction: column;
@@ -631,6 +661,26 @@
   font-size: calc(13px * var(--fs));
   color: var(--fg-muted);
 }
+/*
+  入参摘要（`src/store/chat.ts` / `npm run build`）：紧跟在工具名后的等宽小字，
+  吃掉名字之后的剩余宽度，过长时省略号（完整文本在 `title` 里 —— 卡片一点就展开了，
+  头部反而看不见，所以不能只靠展开）。
+
+  为什么不另起一行：折叠态一眼扫过「调了什么 + 干了什么」才是有用的，而工具调用常常
+  连着好几条，每条多占 20px 高度会把消息流拉得很长。
+*/
+.tool-card__args {
+  /* `flex: 1 1 auto` + `min-width: 0` 才能出省略号：flex 子项默认 min-width: auto，
+     会被内容撑开，`text-overflow` 就永远不生效 */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(11.5px * var(--fs));
+  color: var(--fg-muted);
+}
 /* 规模（`3 行`）：折叠态右侧那个自主上边距的小字，把名字之后的空全部吃掉 */
 .tool-card__size {
   flex: none;
@@ -677,6 +727,41 @@
   overflow: auto;
   max-height: min(50vh, 420px);
   overscroll-behavior: contain;
+}
+/*
+  展开区里的**完整入参**（电脑侧 `formatToolArgs` 给的 pretty JSON）。
+
+  为什么单开一块、而不是并进下面的输出正文：两者是**不同来源**的东西（发起这次调用的入参 vs
+  它的执行输出）。混在一起后，用户分不清哪段是「让它做的」、哪段是「它做出来的」。
+
+  ⚠️ `max-height: 10.5em` = **7 行**（`line-height: 1.5`）：入参可能上千行（`write_file`
+  的正文），但展开区只给它 7 行，要看完整就内部滑。用 `em` 而不是 `px`——字号随「界面大小」
+  设置变大时，行数仍然恒等于 7。
+*/
+.tool-card__args-detail {
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-code);
+}
+.tool-card__args-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--fg-faint);
+  font-size: calc(11px * var(--fs));
+}
+.tool-card__args-body {
+  margin: 0;
+  /* 7 行；`box-sizing: border-box`（index.css 全局）下这里没有内边距，所以恰好是 7 行文字 */
+  max-height: 10.5em;
+  overflow: auto;
+  /* 内部滑完不要接着滚动消息区（否则页面跟着漂） */
+  overscroll-behavior: contain;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(12px * var(--fs));
+  line-height: 1.5;
+  color: var(--fg-3);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 /* 空输出：说一句话，而不是留一张空白卡（与「空正文不渲染气泡」同一条理由） */
 .tool-card__empty {

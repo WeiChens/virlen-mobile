@@ -14,6 +14,7 @@
 import {
   BridgeError,
   Endpoint,
+  SESSION_AGENT_CAPABILITY,
   createCaller,
   MESSAGE_DELETE_CAPABILITY,
   MESSAGE_DETAIL_CAPABILITY,
@@ -182,6 +183,8 @@ const CLIENT_CAPABILITIES = [
   'session.workspace',
   'session.context',
   'session.compress',
+  // 新建会话时可选定 Agent（协议 0.6.0）；旧电脑端没这个能力名 → 手机端不显示选择器
+  SESSION_AGENT_CAPABILITY,
   'interaction.answer',
   'stream.delta',
   /**
@@ -331,6 +334,18 @@ class ConnectionStore extends Store<ConnectionState> {
       // 能力集交给 chatStore：PWA 总是最新的，而电脑端可能是旧版本 ——
       // 旧电脑没有的新能力对应的方法一律**静默不发**（而不是把 E_DENIED 顶到界面上）
       chatStore.setCapabilities(hello.capabilities)
+      /*
+       * 本次连接之后该继续用哪个令牌 —— **电脑端回传的凭证优先**（§30.3）。
+       *
+       * ⚠️ 这一处曾经只在 `devicesStore` 里生效，而 `lastOptions` 照旧带着 `options.token`：
+       * 扫码那条路径的 `options.token` 是**一次性票据**（`pr-…`），它在配对那一刻就被电脑端
+       * 消费掉了（`redeemTicket` 删票）—— 于是「列表里手动连得上（用 grant），自动重连却永远
+       * 失败（用死票）」，真机表现是：手机端「二维码已过期，请重新扫码」，电脑端「已拒绝接入」，
+       * 而两边列表里那台手机都还在。重连 / 重新授权都必须用这一份。
+       *
+       * ⚠️ 旧版电脑端不回 grant → 退回用本次令牌（旧行为，不弄丢重连能力）。
+       */
+      const reconnectToken = hello.grant?.token ?? options.token
       devicesStore.upsert({
         hostKey: device.id,
         /*
@@ -339,9 +354,7 @@ class ConnectionStore extends Store<ConnectionState> {
          * 列表里的「原名」会变得莫名其妙，`rename()` 里「与原名相同就不算改过」的判据也失效。
          */
         name: hello.deviceName || options.deviceName,
-        // ⚠️ 存**电脑端回传的凭证**，不是手上那张一次性票据（§30.3）：
-        //    旧版电脑端不回 grant，则退回用本次令牌（旧行为，不弄丢设备记录）
-        grant: hello.grant?.token ?? options.token,
+        grant: reconnectToken,
         ...(hello.grant ? { issuedAt: hello.grant.issuedAt, expiresAt: hello.grant.expiresAt } : {}),
         signalUrl: options.signalUrl,
         room: options.room,
@@ -351,10 +364,12 @@ class ConnectionStore extends Store<ConnectionState> {
       /*
        * 注入的 transport 不能用于重连（测试 / 联调专用），故不记住重连参数。
        *
-       * `pairing` 也是**一次性**的：重连走的是已签发的凭证，电脑端不再弹窗，
+       * `pairing` 也是**一次性**的：重连走的是已签发的凭证（`reconnectToken`），电脑端不再弹窗，
        * 不该把 60 秒的等待带进重连（那会让「电脑不在线」的回退慢得莫名其妙）。
        */
-      this.lastOptions = options.transport ? null : { ...options, mode: 'connect', pairing: false }
+      this.lastOptions = options.transport
+        ? null
+        : { ...options, token: reconnectToken, mode: 'connect', pairing: false }
       this.setState({
         status: 'online',
         device,

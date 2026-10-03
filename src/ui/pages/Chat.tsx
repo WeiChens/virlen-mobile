@@ -5,7 +5,7 @@
  * 1. **顶栏**：设备名 + 状态（在线 / 工作中 / 压缩中 / 已暂停）、会话标题与模型 / 上下文摘要
  *    （点标题区 = 打开会话信息面板），右上角四个 iconbtn：通讯信号（点开通讯状态面板）、
  *    新建对话、会话列表抽屉、设置（主题 / 界面大小）；
- * 2. 链路横幅 / 暂停横幅 / 待应答卡片 / 一次性提示；
+ * 2. 链路横幅 / **会话错误横幅** / 暂停横幅 / 待应答卡片 / 一次性提示；
  * 3. 消息区（`MessageList`）：**倒置列表**（V6：数据倒序 + `scaleY(-1)`，§34）、工具气泡带工具名、
  *    空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位；
  * 4. 输入区（工作中变「停止」）。
@@ -153,10 +153,25 @@ export default function Chat() {
   )
   const interactions = useStoreSelector(chatStore, (s) => s.interactions)
   const draft = useStoreSelector(chatStore, (s) => s.draft)
+  const agents = useStoreSelector(chatStore, (s) => s.agents)
   const loadingOlder = useStoreSelector(chatStore, (s) => s.loadingOlder)
   const loadingMessages = useStoreSelector(chatStore, (s) => s.loadingMessages)
   const error = useStoreSelector(chatStore, (s) => s.error)
   const notice = useStoreSelector(chatStore, (s) => s.notice)
+  /**
+   * 电脑侧报出的会话错误（`RuntimeDTO.error`）。
+   *
+   * 与上面的 `error` 不同：那个是本端请求失败，这个是**电脑侧会话自己说的**（引擎跑挂）。
+   * 「已点掉的那条」比的是**文本**：同一句话不再重复弹，换了内容立刻重新出现
+   * （为何不用布尔见 `store/chat.ts` 的 `dismissedError`）。
+   */
+  const sessionError = useStoreSelector(chatStore, (s) =>
+    s.currentSessionId ? s.sessionError[s.currentSessionId] : undefined,
+  )
+  const dismissedError = useStoreSelector(chatStore, (s) =>
+    s.currentSessionId ? s.dismissedError[s.currentSessionId] : undefined,
+  )
+  const runtimeError = sessionError && sessionError !== dismissedError ? sessionError : undefined
 
   /**
    * 待应答卡片：**全局的（`sessionId === ''`，终端内确认无会话信息）+ 当前会话的**。
@@ -195,15 +210,20 @@ export default function Chat() {
             ? '链路已断开'
             : '通讯状态未知'
 
-  // 顶栏第二行摘要：会话 → 模型 / 上下文；新对话 → 草稿模型 / 草稿目录
+  // 顶栏第二行摘要：会话 → 模型 / 上下文；新对话 → Agent / 模型 / 目录
   const percent = context ? contextPercent(context.tokens, context.windowTokens) : null
   const metaParts: string[] = []
   if (currentId) {
     if (current?.modelId) metaParts.push(current.modelId)
     if (percent != null) metaParts.push(`上下文 ${percent}%`)
   } else {
-    if (draft.modelId) metaParts.push(draft.modelId)
-    if (draft.workspace) metaParts.push(baseNameOf(draft.workspace))
+    // 新对话：显示**实际会生效的值**（显式选的 > 所选 Agent 的默认值），与 NewChatPanel 同一口径
+    const draftAgent = draft.agentId ? agents.find((a) => a.id === draft.agentId) : undefined
+    const draftModelId = draft.modelId ?? draftAgent?.defaultModel?.modelId
+    const draftWorkspace = draft.workspace ?? draftAgent?.defaultWorkspace
+    if (draftAgent) metaParts.push(draftAgent.name)
+    if (draftModelId) metaParts.push(draftModelId)
+    if (draftWorkspace) metaParts.push(baseNameOf(draftWorkspace))
   }
 
   /**
@@ -413,6 +433,26 @@ export default function Chat() {
             onClick={() => void chatStore.resume(currentId)}
           >
             继续
+          </button>
+        </div>
+      )}
+
+      {/*
+        电脑侧会话出错（API 401 / 上下文超限 / 工具炸了）——2026-10 真机反馈：
+        过去这里什么都没有，手机只看到「工作中」变回空闲，对原因一无所知，只能跑回电脑前看。
+
+        为何放在输入区上方而不是消息流里（`.chat__error` 那个位置）：错误报告到达时，用户往往
+        已经滑到别处或退出过会话再进来，贴在消息列表末尾的提示等于没提示。
+      */}
+      {runtimeError && currentId && (
+        <div className="chat__banner chat__banner--error" role="alert">
+          <span className="chat__banner-text">{runtimeError}</span>
+          <button
+            type="button"
+            className="btn btn--small btn--ghost"
+            onClick={() => chatStore.dismissSessionError(currentId)}
+          >
+            知道了
           </button>
         </div>
       )}

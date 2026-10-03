@@ -93,6 +93,56 @@ describe('消息渲染规则', () => {
     expect(toolView(base).name).toBeNull()
   })
 
+  it('toolView：入参摘要原样用电脑侧给的那一行（手机端不拼、也不从正文反推）', () => {
+    const base = { role: 'tool' as const, id: 't', createdAt: 0, text: 'staged files...' }
+    // 2026-10 真机反馈：只有工具名时，用户看不出这一步动的是哪个文件 / 跑的什么命令
+    expect(
+      toolView({ ...base, toolName: 'edit_file', toolArgs: 'src/store/chat.ts · 减少 2行,新增 3行' })
+        .args,
+    ).toBe('src/store/chat.ts · 减少 2行,新增 3行')
+    expect(toolView({ ...base, toolName: 'execute_command', toolArgs: 'npm run build' }).args).toBe(
+      'npm run build',
+    )
+    // 旧电脑端 / 跨页工具调用：字段缺席 → null，卡片就不显示这一行
+    expect(toolView(base).args).toBeNull()
+  })
+
+  it('toolView：展开区的完整入参原样转交（电脑侧已按 5000 中间省略过）', () => {
+    const base = { role: 'tool' as const, id: 't', createdAt: 0, text: '已写入' }
+    const full = '{\n  "path": "src/a.ts",\n  "content": "x"\n}'
+    // 2026-10 真机反馈的第二轮：「入参显示不完整」—— 摘要只挑主参数，展开区给入参本身
+    const view = toolView({
+      ...base,
+      toolName: 'write_file',
+      toolArgs: 'src/a.ts · 写入 1 行',
+      toolArgsFull: full,
+    })
+    expect(view.args).toBe('src/a.ts · 写入 1 行')
+    expect(view.argsFull).toBe(full)
+
+    // 中间省略的标记照原样显示：手机端不解释也不修剪（那一行就是「被砍过」的凭证）
+    const elided = 'A\n\n…（中间省略 1200 字符）…\n\nB'
+    expect(toolView({ ...base, toolArgsFull: elided }).argsFull).toBe(elided)
+
+    // 旧电脑端 / 跨页工具调用 / 无参数的工具 → null，展开区不渲染这一块
+    expect(toolView(base).argsFull).toBeNull()
+  })
+
+  it('toolView：入参摘要有无都不影响规模口径（空输出仍不报行数）', () => {
+    const noBody = toolView({
+      role: 'tool',
+      id: 't',
+      createdAt: 0,
+      text: '  ',
+      toolArgs: 'src/a.ts',
+      toolArgsFull: '{\n  "path": "src/a.ts"\n}',
+    })
+    expect(noBody.size).toBe('')
+    expect(noBody.meta).toBe('')
+    expect(noBody.args).toBe('src/a.ts')
+    expect(noBody.argsFull).toBe('{\n  "path": "src/a.ts"\n}')
+  })
+
   it('toolView：规模给出行数与字符数（行数扣掉末尾空行）', () => {
     // 工具输出几乎都以换行结尾：不扣掉的话每条都多报一行
     const view = toolView({

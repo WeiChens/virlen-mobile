@@ -358,6 +358,118 @@ describe('§22 —— 上下文占用与压缩', () => {
   })
 })
 
+// ───────────────────────── 新建会话：选定 Agent（协议 0.6.0）─────────────────────────
+
+/**
+ * 「新建会话无法切换 Agent」的真机反馈（2026-10）—— 手机端这一半。
+ *
+ * 缺陷不是「坏了」而是「从未实现」：草稿里没有 agentId、面板里没有入口、
+ * 请求里自然也带不上。这里盯住四条：
+ *  1. 候选集来自电脑侧（`host.agent.list`），且**有缓存**；
+ *  2. 换 Agent 会**清掉模型 / 工作目录**（让该 Agent 的默认值生效，与桌面同语义），
+ *     重复选同一个则不动手；
+ *  3. 选定值真的随 `host.session.create` 下行（否则手机显示的和电脑侧建出来的不一致）；
+ *  4. 越权 id 由电脑侧拦（`E_BAD_REQUEST`），旧电脑端则**静默不发**该字段。
+ */
+describe('§22 —— 新建会话选定 Agent', () => {
+  it('候选集来自电脑侧且可缓存；换 Agent 清掉模型 / 目录，重复选不动手', async () => {
+    await connect()
+    await flush(10)
+    await chatStore.loadAgents()
+    expect(countCalls('host.agent.list')).toBe(1)
+    expect(chatStore.getSnapshot().agents.map((a) => a.name)).toEqual(['Virlen', '代码评审员'])
+
+    // 已缓存 → 不再请求（与模型清单同一策略）
+    await chatStore.loadAgents()
+    expect(countCalls('host.agent.list')).toBe(1)
+
+    chatStore.newChat()
+    // 草稿会种上「最近一个会话」的 Agent（demo-1 → agent-virlen），先确认这个前提
+    expect(chatStore.getSnapshot().draft.agentId).toBe('agent-virlen')
+    chatStore.setDraftWorkspace('E:/code/virlen-demo')
+    await chatStore.setModel('p-anthropic', 'claude-sonnet-4')
+    expect(chatStore.getSnapshot().draft).toMatchObject({
+      workspace: 'E:/code/virlen-demo',
+      modelId: 'claude-sonnet-4',
+    })
+
+    // 换一个 Agent = 重置另外两项（只留 agentId）
+    chatStore.setDraftAgent('agent-reviewer')
+    expect(chatStore.getSnapshot().draft).toEqual({ agentId: 'agent-reviewer' })
+
+    // 重复选同一个 = 无操作（不抹掉用户刚挑好的目录）
+    chatStore.setDraftWorkspace('E:/code/virlen-demo')
+    chatStore.setDraftAgent('agent-reviewer')
+    expect(chatStore.getSnapshot().draft.workspace).toBe('E:/code/virlen-demo')
+  })
+
+  it('选定的 Agent 随创建请求下行：新会话在电脑侧归属该 Agent，并采用它的默认模型 / 目录', async () => {
+    await connect()
+    chatStore.newChat()
+    // 「代码评审员」在 mock 里配了自己的默认模型与默认目录
+    chatStore.setDraftAgent('agent-reviewer')
+
+    await chatStore.send('帮我评审一下')
+    await flush(20)
+
+    const snap = chatStore.getSnapshot()
+    const created = snap.sessions.find((s) => s.id === snap.currentSessionId)!
+    expect(created.agentId).toBe('agent-reviewer')
+    expect(created.agentName).toBe('代码评审员')
+    // 没显式选模型 / 目录 → 用所选 Agent 的默认值（电脑侧同序）
+    expect(created.modelId).toBe('claude-sonnet-4')
+    expect(created.workspace).toBe('E:/code/another-project')
+  })
+
+  it('越权 Agent → 电脑侧拒（E_BAD_REQUEST），且不产生会话', async () => {
+    await connect()
+    await flush(10)
+    chatStore.newChat()
+    // 模拟「手机端被改过 / 被伪造」：塞一个候选集里没有的 id
+    chatStore.setDraftAgent('agent-不存在')
+
+    const before = chatStore.getSnapshot().sessions.length
+    await chatStore.send('越权尝试')
+    await flush(20)
+
+    expect(chatStore.getSnapshot().error).toBeTruthy()
+    expect(chatStore.getSnapshot().sessions).toHaveLength(before)
+    expect(chatStore.getSnapshot().currentSessionId).toBeNull()
+  })
+
+  it('候选集刷新后，已不存在的草稿 Agent 被清掉（回落电脑侧默认 Agent）', async () => {
+    await connect()
+    chatStore.setDraftAgent('agent-不存在')
+    await chatStore.loadAgents()
+    expect(chatStore.getSnapshot().draft.agentId).toBeUndefined()
+  })
+
+  /**
+   * 旧电脑端（能力集里没有 `session.agent`）—— 「老电脑 + 新 PWA」这条组合。
+   *
+   * `agentId` 是**普通可选字段**，旧电脑端会静默丢掉：用户以为建的是「代码评审员」，
+   * 实际建的是默认 Agent。这种假绿灯比报错难发现得多，所以必须由能力位拦住。
+   */
+  it('旧电脑端：不请求候选集，创建时也不携带 agentId（不静默发新请求）', async () => {
+    await connect()
+    chatStore.setCapabilities(['session.list', 'session.send', 'session.create'])
+    chatStore.newChat()
+    chatStore.setDraftAgent('agent-reviewer')
+
+    await chatStore.loadAgents()
+    expect(countCalls('host.agent.list')).toBe(0)
+
+    await chatStore.send('旧电脑端')
+    await flush(20)
+
+    const snap = chatStore.getSnapshot()
+    const created = snap.sessions.find((s) => s.id === snap.currentSessionId)!
+    // 归属电脑侧默认 Agent（mock 的 agent-virlen），且没有留下错误条
+    expect(created.agentId).toBe('agent-virlen')
+    expect(snap.error).toBeUndefined()
+  })
+})
+
 // ───────────────────────── 流式正文 ─────────────────────────
 
 describe('§22 —— 流式正文（真机缺陷回归）', () => {

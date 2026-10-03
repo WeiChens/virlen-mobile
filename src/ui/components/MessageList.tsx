@@ -161,11 +161,21 @@ const MessageRow = memo(function MessageRow({
             title={open ? '收起工具输出' : '展开工具输出'}
           >
             <IconTerminal className="tool-card__icon" width={16} height={16} />
-            {/* 工具名由电脑侧解析（`buildToolNameIndex`），手机端不猜 */}
+            {/* 工具名与入参都由电脑侧解析（`buildToolCallIndex` + `summarizeToolArgs`），手机端不猜 */}
             {view.name ? (
               <code className="tool-card__name">{view.name}</code>
             ) : (
               <span className="tool-card__name tool-card__name--unknown">工具调用</span>
+            )}
+            {/*
+              入参摘要（`src/store/chat.ts` / `npm run build`）：
+              它就是「这一步到底在干什么」，与工具名同等重要 —— 长内容靠 CSS 省略号截断，
+              完整文本留在 title（点开卡片反而看不到头部，所以不能只靠展开）。
+            */}
+            {view.args && (
+              <span className="tool-card__args" title={view.args}>
+                {view.args}
+              </span>
             )}
             {/* 展开后不重复规模：正文下面就有一行更全的（行数 · 字符数） */}
             {!open && view.size && (
@@ -177,6 +187,20 @@ const MessageRow = memo(function MessageRow({
           </button>
           {open && (
             <>
+              {/*
+                完整入参（电脑侧 `formatToolArgs` 给的 pretty JSON）。折叠态那行摘要是**摘出来的**：
+                它只挑主参数且有长度上限 —— 用户点开卡片想看的就是「刚才没显示完的那部分」。
+                超过 7 行在块内滚动（一段 `write_file` 的正文动辄上百行，全铺开会把下面的
+                「调用的输出」直接挤出屏幕）；它比正文先出现，因为入参是「让它做的」、
+                输出是「它做出来的」，顺序与因果一致。
+              */}
+              {view.argsFull && (
+                <div className="tool-card__args-detail">
+                  <span className="tool-card__args-label">入参</span>
+                  {/* 超长已由电脑侧按 `TOOL_DETAIL_MAX` 中间省略（标记行就在正文里） */}
+                  <pre className="tool-card__args-body">{view.argsFull}</pre>
+                </div>
+              )}
               {hasBody(message) ? (
                 <pre className="tool-card__body">{message.text}</pre>
               ) : view.omitted ? (

@@ -271,4 +271,133 @@ describe('工具调用卡片', () => {
     // 带上「怎么拿回全文」：只说「被省略了」会让用户以为永久丢了
     expect(omitted?.textContent).toContain('重开会话')
   })
+
+  it('入参摘要：卡片上直接看得到「这一步动的是谁 / 跑的什么命令」', async () => {
+    await connect()
+    await chatStore.openSession('demo-1')
+    await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
+
+    act(() => {
+      /*
+       * ⚠️ 分组（§35）：连续的工具调用会被合成**一组**，而组在折叠态**不渲染组内卡片** ——
+       * 要让「这张卡」单独可见，得先在前面放一条正文消息当边界（与上游那条用例同一手法）。
+       */
+      breakToolRun('before-args')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-cmd',
+          role: 'tool',
+          text: '用例全绿',
+          createdAt: Date.now(),
+          toolName: 'execute_command',
+          toolArgs: 'npm run test -- --reporter=verbose 这一行故意写得很长很长很长很长很长很长很长很长',
+        },
+      })
+      breakToolRun('before-noargs')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-noargs',
+          role: 'tool',
+          text: 'ok',
+          createdAt: Date.now(),
+          toolName: 'noop',
+        },
+      })
+    })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    // mock 宿主那条 `list_files` 的入参摘要来自共享包（`summarizeToolArgs`）
+    expect(cardOf('list_files').querySelector('.tool-card__args')?.textContent).toBe('src')
+
+    const cmdArgs = cardOf('execute_command').querySelector('.tool-card__args')
+    expect(cmdArgs?.textContent).toContain('npm run test')
+    // 完整文本留在 title 里（内联省略号截断掉的那截仍然拿得到）
+    expect(cmdArgs?.getAttribute('title')).toContain('--reporter=verbose')
+
+    // 电脑侧没给摘要（旧电脑端 / 跨页工具调用）→ 不凭空造一行空的
+    expect(cardOf('noop').querySelector('.tool-card__args')).toBeNull()
+  })
+
+  it('展开后看得到完整入参：折叠态进不了 DOM，展开态才渲染', async () => {
+    await connect()
+    await chatStore.openSession('demo-1')
+    await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
+
+    act(() => {
+      breakToolRun('before-detail')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-detail',
+          role: 'tool',
+          text: '已写入',
+          createdAt: Date.now(),
+          toolName: 'write_file',
+          toolArgs: 'src/big.ts · 写入 2 行',
+          toolArgsFull: '{\n  "path": "src/big.ts",\n  "content": "一\\n二"\n}',
+        },
+      })
+    })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    // 折叠态：完整入参**不在 DOM 里**（不是 CSS 藏起来）—— 它比摘要重得多，点开才付这个代价
+    expect(cardOf('write_file').querySelector('.tool-card__args-body')).toBeNull()
+
+    click(head(cardOf('write_file')))
+    const opened = cardOf('write_file')
+    expect(opened.querySelector('.tool-card__args-label')?.textContent).toBe('入参')
+    const detail = opened.querySelector('.tool-card__args-body')
+    expect(detail?.textContent).toContain('"path": "src/big.ts"')
+    expect(detail?.textContent).toContain('"content"')
+    // 摘要那行还在头部：折叠态管「在干什么」，展开态管「具体是什么」
+    expect(head(opened).querySelector('.tool-card__args')?.textContent).toBe('src/big.ts · 写入 2 行')
+
+    // mock 宿主那条（共享包 `formatToolArgs` 生成）也带得出来 —— 真实链路吃的是同一套
+    click(head(cardOf('list_files')))
+    expect(cardOf('list_files').querySelector('.tool-card__args-body')?.textContent).toBe(
+      '{\n  "path": "src"\n}',
+    )
+  })
+
+  it('电脑侧没给完整入参（旧端 / 无参数工具）→ 展开区不凭空造一块', async () => {
+    await connect()
+    await chatStore.openSession('demo-1')
+    await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
+
+    act(() => {
+      breakToolRun('before-plain')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-plain',
+          role: 'tool',
+          text: 'ok',
+          createdAt: Date.now(),
+          toolName: 'noop',
+        },
+      })
+    })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    click(head(cardOf('noop')))
+    const opened = cardOf('noop')
+    expect(opened.querySelector('.tool-card__args-body')).toBeNull()
+    expect(opened.querySelector('.tool-card__args-label')).toBeNull()
+    // 输出那一块照常在（少的只是入参）
+    expect(opened.querySelector('.tool-card__body')?.textContent).toBe('ok')
+  })
 })

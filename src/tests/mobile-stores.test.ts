@@ -217,6 +217,44 @@ describe('chatStore.applyEvent —— 事件 → 缓存', () => {
     expect(chatStore.getSnapshot().working['x']).toBe(true)
   })
 
+  /**
+   * 2026-10 真机反馈：电脑端会话报错时手机端一个字都看不到。
+   * 根因的一半在这里 —— 事件处理器只取了 working / paused / compacting / toolProgress，
+   * `runtime.error` 被静默丢掉（字段在协议里、电脑侧也一直在发）。
+   */
+  it('runtime.changed 落盘电脑侧错误；字段缺席（电脑侧清掉）→ 本地跟着清', () => {
+    const push = (runtime: { working: boolean; error?: string }) =>
+      chatStore.applyEvent('host.event.session.runtime.changed', { sessionId: 'x', runtime })
+
+    push({ working: false, error: 'API Error (401)：凭证无效' })
+    expect(chatStore.getSnapshot().sessionError['x']).toBe('API Error (401)：凭证无效')
+
+    // 电脑侧没有了（用户点掉 / 重新发送时清了）→ 权威在电脑侧，本地必须跟着没
+    push({ working: false })
+    expect(chatStore.getSnapshot().sessionError['x']).toBeUndefined()
+  })
+
+  /**
+   * 「已读」标记为何按**文本**记：手机不能清电脑侧的错误（协议里没有这条 RPC），
+   * 而运行时快照每次重开会话都会补推一次 —— 布尔标记会让同一句话永远弹不出来。
+   */
+  it('错误「无 → 有」时撤销已读标记：同内容的错误重新发生也能弹', () => {
+    const push = (error?: string) =>
+      chatStore.applyEvent('host.event.session.runtime.changed', {
+        sessionId: 'x',
+        runtime: { working: false, ...(error ? { error } : {}) },
+      })
+
+    push('API Error (401)')
+    chatStore.dismissSessionError('x')
+    expect(chatStore.getSnapshot().dismissedError['x']).toBe('API Error (401)')
+
+    // 电脑侧重新发送 → 先推一帧不带 error 的（清掉上一条），再报同样的错
+    push()
+    push('API Error (401)')
+    expect(chatStore.getSnapshot().dismissedError['x']).toBeUndefined()
+  })
+
   it('list.changed 覆盖会话列表', () => {
     chatStore.applyEvent('host.event.session.list.changed', {
       sessions: [{ id: 's1', title: '一', updatedAt: 1, working: false }],

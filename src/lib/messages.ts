@@ -6,9 +6,10 @@
  * 1. **空正文不渲染气泡**：纯工具调用轮的 assistant 消息正文是空串（Rust 引擎
  *    `llm_round.rs` 建的 assistant 消息内容初始为空），渲染出来就是一个空气泡 ——
  *    用户看到的是「一条什么都没有的消息」，只会以为界面坏了；
- * 2. **工具气泡必须显示工具名**：`role:'tool'` 的正文只有结果文本，光看 `git status`
- *    的输出并不知道那是在干什么。工具名由电脑侧解析（`buildToolNameIndex`），
- *    解析不到时**不猜**，显示中性的「工具调用」；
+ * 2. **工具气泡必须显示工具名与入参**：`role:'tool'` 的正文只有结果文本，光看 `git status`
+ *    的输出并不知道那是在干什么。工具名与入参都由电脑侧解析（`buildToolCallIndex` +
+ *    `summarizeToolArgs`），手机端**不猜也不加工** —— 解析不到时分别退化为中性的
+ *    「工具调用」与什么都不显示；
  * 3. **压缩摘要等 `system` 消息照常显示、但默认折叠**：用户需要看到「这里发生过一次
  *    上下文压缩」（所以不能因为拥挤就不显示），但摘要正文是整段历史的浓缩，默认展开
  *    会把对话流冲散 —— 折叠态只留「标签 + 正文开头」，要细看再点开。
@@ -80,6 +81,29 @@ export interface ToolView {
   /** 工具名（如 `read_file`）；电脑侧没解析出来时为 `null`。 */
   name: string | null
   /**
+  /**
+   * 入参摘要（如 `src/store/chat.ts`、`npm run build`、`在 src 中搜索 sessionError`）。
+   *
+   * 2026-10 真机反馈：工具气泡只有工具名，看不到**编辑的是哪个文件、执行的是什么命令**
+   * —— 而这正是用户判断「AI 干了什么」的唯一依据。
+   *
+   * ⚠️ 这是电脑侧**已格式化好**的一行（`summarizeToolArgs`，真实端与演示宿主共用
+   * 同一份实现）：手机端**不重新拼、也不从正文反推**；拿不到（旧电脑端 / 跨页工具调用）
+   * 时为 `null`，卡片就不显示这一行。
+   */
+  args: string | null
+  /**
+   * 展开区的**完整入参**（多行 pretty JSON，电脑侧 `formatToolArgs` 生成）。
+   *
+   * 2026-10 真机反馈的第二轮：「入参显示不完整」—— `args` 是一行摘要（只挑主参数 + 有长度
+   * 上限），用户点开卡片想知道「刚才那行没显示完的是什么」。
+   *
+   * 与 `args` 同一条纪律 —— 手机端**不重新拼、也不从正文反推**，电脑侧给什么显示什么；
+   * 超长已由电脑侧按 `TOOL_DETAIL_MAX`（5000）**中间省略**过（标记行写在正文里）。
+   * 拿不到（旧电脑端 / 跨页工具调用 / 无参数）时为 `null`，展开区就不渲染这一块。
+   */
+  argsFull: string | null
+  /**
    * 折叠态右侧的短标签：正常是规模（`3 行`），被档位省略时是「已省略」，
    * 真没输出时是空串（不报「0 行」——那比承认没有输出更让人困惑）。
    */
@@ -105,9 +129,16 @@ export function toolView(message: MessageDTO): ToolView {
   const omitted = isDetailOmitted(message)
   const lines = countLines(message.text)
   const name = message.toolName ?? null
-  if (lines === 0) return { name, size: omitted ? '已省略' : '', meta: '', omitted }
+  const args = message.toolArgs ?? null
+  const argsFull = message.toolArgsFull ?? null
+  // 两处扩展合流：上游的「已省略」标签 + 我们的入参两行（`args` / `argsFull`）
+  if (lines === 0) {
+    return { name, args, argsFull, size: omitted ? '已省略' : '', meta: '', omitted }
+  }
   return {
     name,
+    args,
+    argsFull,
     size: `${lines} 行`,
     // 字符数复用 token 环那套口径（`12500 → 12.5k`）：同一个页面上不该有两种缩写规则
     meta: `${lines} 行 · ${formatTokens(message.text.length)} 字符`,
