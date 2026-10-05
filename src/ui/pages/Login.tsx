@@ -42,7 +42,13 @@ const ICE_PLACEHOLDER = `[
   { "urls": "turn:your.server:3478", "username": "user", "credential": "pass" }
 ]`
 
-/** 在线状态：`undefined` = 未知（旧记录没有信令基址 / 查询失败）。 */
+/**
+ * 在线状态：**缺键 / `undefined` = 未知**（这次查询没成功，或服务端没答这一间房）。
+ *
+ * 由共享包 `fetchHostOnlineMap` 决定：它只把**服务端明确答过**的电脑写进 Map ——
+ * 「问不到」不再被当成「不在线」（旧实现是 `?? false`，一次查询失败会让名单上每一台都变成
+ * 「电脑不在线」）。页面只负责把未知渲染成「状态未知」，不替服务端下结论。
+ */
 type OnlineMap = Map<string, boolean>
 /** 在线状态轮询间隔（登录页停着时）；只查一次会迅速过期，查太勤没必要。 */
 const ONLINE_POLL_MS = 15_000
