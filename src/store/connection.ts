@@ -469,6 +469,12 @@ class ConnectionStore extends Store<ConnectionState> {
     try {
       await this.handshake(endpoint, opts.token, HELLO_TIMEOUT_MS)
       this.handshook = true
+      /*
+       * 重新授权成功 = 这条链路上的**对面可能已经换了一茬服务**（电脑侧 `dropLink` / 重启用
+       * 都会换链路）：待应答交互的权威快照必须重拉一次，否则手机上那张卡片会变成点不动的僵尸
+       * （点一下得「该请求已在电脑上处理」，而电脑端其实还在等）。与 `onEndpointReady` 同一套动作。
+       */
+      void chatStore.resyncAfterReauth()
     } catch (err) {
       const reason = classifyError(err)
       if (HARD_DENIALS.has(reason)) {

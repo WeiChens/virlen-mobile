@@ -182,6 +182,16 @@ class ChatStore extends Store<ChatState> {
   private contextEventSeq: Record<string, number> = {}
 
   /**
+   * 交互在本机的**到达时刻**（interactionId → 本机 ms）——供 `refreshInteractions` 的合并规则用。
+   *
+   * 为何不用电脑侧给的 `InteractionDTO.createdAt`：那是**电脑的时钟**，与本机 `Date.now()`
+   * 不同源。手机时钟快一点就会把**刚推到的卡片**判成「比快照旧」而删掉（真机表现：
+   * 问题正在等应答，手机上却什么都没有）；反过来则僵尸卡片永远清不掉。
+   * 与 `contextEventSeq`（「计数器不受时钟精度影响」）是同一条纪律。
+   */
+  private interactionArrivedAt = new Map<string, number>()
+
+  /**
    * 正在进行的「拉全文对齐」（§32）—— 键是 `会话\u0001消息`。
    *
    * 为何要去重：流式期间可能**连续**收到接不上的增量（比如刚重订阅就迎来一批旧帧），
@@ -212,6 +222,7 @@ class ChatStore extends Store<ChatState> {
   reset(): void {
     this.capabilities = []
     this.contextEventSeq = {}
+    this.interactionArrivedAt.clear()
     this.dupWarned.clear()
     this.setState({ ...INITIAL })
   }
@@ -723,6 +734,7 @@ class ChatStore extends Store<ChatState> {
   }
 
   private dropInteraction(interactionId: string): void {
+    this.interactionArrivedAt.delete(interactionId)
     this.setState((s) => ({
       ...s,
       interactions: s.interactions.filter((i) => i.interactionId !== interactionId),
@@ -730,26 +742,40 @@ class ChatStore extends Store<ChatState> {
   }
 
   /**
-   * 拉取「当前待应答交互」快照（链接就绪 / 重连后调用）。
+   * 拉取「当前待应答交互」快照（链接就绪 / 重连 / **链路代际更替**后调用）。
    *
    * 为什么不能只靠事件：`host.event.interaction.requested` 是**一次性**的 ——
    * 手机在交互发起之后才连上时事件已错过，界面会表现为「会话卡在 working，却没有任何可点的东西」。
    *
    * 合并规则（避免用快照覆盖掉刚收到的事件）：
    * - 快照里有的 → 保留（并补齐本地缺少的）；
-   * - 快照里没有、但**本地条目是在本次拉取开始之后**创建的 → 保留（它比快照新）；
+   * - 快照里没有、但**本地是本次拉取开始之后**到的 → 保留（它比快照新）；
    * - 其余本地条目 → 丢弃（服务端已不再挂起，属僵尸卡片）。
+   *
+   * ⚠️ 「本地是什么时候到的」一律看 `interactionArrivedAt`（**本机**时钟），
+   * 不拿电脑侧的 `createdAt` 与本机 `Date.now()` 比大小（原因见那个字段的说明）。
    */
   async refreshInteractions(): Promise<void> {
     const startedAt = Date.now()
     try {
       const { interactions } = await getCaller().call('host.interaction.list', {})
       const alive = new Set(interactions.map((i) => i.interactionId))
-      this.setState((s) => {
-        const kept = s.interactions.filter((i) => alive.has(i.interactionId) || i.createdAt >= startedAt)
-        const known = new Set(kept.map((i) => i.interactionId))
-        return { ...s, interactions: [...kept, ...interactions.filter((i) => !known.has(i.interactionId))] }
-      })
+      const kept = this.getSnapshot().interactions.filter(
+        (i) =>
+          alive.has(i.interactionId) ||
+          (this.interactionArrivedAt.get(i.interactionId) ?? 0) >= startedAt,
+      )
+      const known = new Set(kept.map((i) => i.interactionId))
+      const added = interactions.filter((i) => !known.has(i.interactionId))
+      const now = Date.now()
+      // 快照来的条目也记到达时刻（= 此刻）：下次拉取若服务端已不再挂起它，就能按僵尸清掉
+      for (const i of added) this.interactionArrivedAt.set(i.interactionId, now)
+      // 到达记录只留还在列表里的（否则这张表会随「历史上出现过的交互」一直涨）
+      const live = new Set([...kept, ...added].map((i) => i.interactionId))
+      for (const id of [...this.interactionArrivedAt.keys()]) {
+        if (!live.has(id)) this.interactionArrivedAt.delete(id)
+      }
+      this.setState((s) => ({ ...s, interactions: [...kept, ...added] }))
     } catch {
       /* 拉取失败不弹错：事件通道若活着，卡片照样会来 */
     }
@@ -770,6 +796,25 @@ class ChatStore extends Store<ChatState> {
     if (sessionId && this.getSnapshot().sessions.some((s) => s.id === sessionId)) {
       await this.openSession(sessionId)
     }
+  }
+
+  /**
+   * 链路**代际更替后重新授权成功**时的重同步（动作与 `onEndpointReady` 完全一致）。
+   *
+   * 为何单独一条入口：链路可以在**同一次会话里**被重建 —— 本端只看到 `connecting → open`，
+   * `connect()` 不会重跑、`onEndpointReady` 也不会再触发（见 `connection.ts::reverify`）。
+   * 而这条链路对面可能已经是**另一侧服务实例**（电脑侧 `dropLink` / 重启用都会换链路），
+   * 待应答交互的权威快照必须**重新拉一次**：
+   * 不拉的话，手机上那张卡片就永远是点不动的僵尸 —— 点一下只会得到
+   * 「该请求已在电脑上处理」，而电脑端其实还在等（真机缺陷，2026-10）。
+   */
+  async resyncAfterReauth(): Promise<void> {
+    /*
+     * ⚠️ 两件必须**并发**发起（与 `onEndpointReady` 原来的写法一致，`Promise.all` 也是同时开跑）：
+     * 串行（先 await 交互快照、再重拉会话）会把 `openSession` 拖到多一个 RPC 之后 ——
+     * 首屏消息、工具卡片、分页都跟着晚到，跨连即渲染的用例会大面积超时。
+     */
+    await Promise.all([this.refreshInteractions(), this.resync()])
   }
 
   /**
@@ -950,6 +995,8 @@ class ChatStore extends Store<ChatState> {
       }
       case 'host.event.interaction.requested': {
         const e = payload as HostEvents['host.event.interaction.requested']
+        // 记**本机到达时刻**（合并规则不看电脑侧时钟，见 `interactionArrivedAt`）
+        this.interactionArrivedAt.set(e.interaction.interactionId, Date.now())
         this.setState((s) => ({
           ...s,
           interactions: s.interactions.some((i) => i.interactionId === e.interaction.interactionId)
@@ -961,6 +1008,7 @@ class ChatStore extends Store<ChatState> {
       case 'host.event.interaction.resolved': {
         const e = payload as HostEvents['host.event.interaction.resolved']
         // 可能是电脑上先处理了（`by:'host'`）—— 一样要收起卡片，否则用户会点一个已死的按钮
+        this.interactionArrivedAt.delete(e.interactionId)
         this.setState((s) => ({
           ...s,
           interactions: s.interactions.filter((i) => i.interactionId !== e.interactionId),
@@ -992,10 +1040,13 @@ onEndpointReady((endpoint: Endpoint) => {
   for (const topic of HOST_EVENT_TOPICS) {
     endpoint.subscribe(topic, (payload) => chatStore.applyEvent(topic, payload))
   }
-  // 补齐「在本次连接之前就已挂起」的交互（事件已错过，快照拉回来）
-  void chatStore.refreshInteractions()
-  // 重连后：会话列表 + 当前会话消息重新拉快照（断线期间的变更无法增量补齐）
-  void chatStore.resync()
+  /*
+   * 补齐「在本次连接之前就已挂起」的交互（事件已错过，快照拉回来）：
+   *  - 新链路（首次连接 / 自动重连）走到这里；
+   *  - **链路代际更替**（本端只看到 `connecting → open`，走不到这里）由
+   *    `connection.ts::reverify` 调 `resyncAfterReauth()` 补上 —— 两条路径必须做同一套动作。
+   */
+  void chatStore.resyncAfterReauth()
 })
 
 function messageOf(err: unknown): string {

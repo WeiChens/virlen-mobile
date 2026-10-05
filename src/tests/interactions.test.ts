@@ -116,6 +116,57 @@ describe('chatStore —— 交互投影', () => {
     await chatStore.refreshInteractions()
     expect(chatStore.getSnapshot().interactions).toHaveLength(0)
   })
+
+  /**
+   * 真机缺陷回归（2026-10）：链路**代际更替**（本端只看到 `connecting → open`，
+   * 走不到 `onEndpointReady`）之后，待应答交互的权威快照必须**重拉一次**。
+   * 不拉的话，手机上那张卡片就永远是点不动的僵尸 —— 点一下只会得到「该请求已在电脑上处理」，
+   * 而电脑端其实还在等。
+   */
+  it('重授权后重同步（resyncAfterReauth）→ 把丢掉的卡片从权威快照里拿回来', async () => {
+    await connect()
+    const id = host!.mock.triggerInteraction({ kind: 'choice', question: '选哪个？', options: ['A'] })
+    await waitForInteraction(id)
+
+    // 模拟「本端已把卡片丢掉」（僵尸清理 / 本地状态被重置），而电脑侧仍在等
+    chatStore.applyEvent('host.event.interaction.resolved', { interactionId: id, by: 'host' })
+    expect(chatStore.getSnapshot().interactions).toHaveLength(0)
+
+    await chatStore.resyncAfterReauth()
+    expect(chatStore.getSnapshot().interactions.map((i) => i.interactionId)).toContain(id)
+    // 拿回来的卡片必须是可应答的（不是又一张死卡片）
+    expect(await chatStore.answer(id, 'choose', { value: { selected: ['A'], customReply: '' } })).toBe(true)
+  })
+
+  /**
+   * 合并规则用的是**本机到达时刻**，而不是电脑侧给的 `createdAt`。
+   *
+   * 为何必须如此：两端时钟不同源 —— 手机时钟快一点，`i.createdAt >= startedAt` 就会把
+   * **刚推到的卡片**当成「比快照旧」而删掉（真机表现：问题正在等应答，手机上却什么都没有）。
+   */
+  it('拉取快照**期间**到达的交互不得被合并规则误删（跨端时钟不可比）', async () => {
+    await connect()
+
+    // 不 await：让快照请求在途，再往 store 里塞一条「电脑侧 createdAt 落在很久以前」的卡片
+    const pending = chatStore.refreshInteractions()
+    chatStore.applyEvent('host.event.interaction.requested', {
+      interaction: {
+        interactionId: 'it-skew',
+        sessionId: 'demo-1',
+        toolCallId: 'tc-skew',
+        kind: 'choice',
+        createdAt: 1, // ← 电脑侧时钟远早于本机「拉取开始时刻」
+        tier: 'low',
+        question: '选哪个？',
+        options: ['A'],
+        multi: false,
+        presentation: 'modal',
+      },
+    })
+    await pending
+
+    expect(chatStore.getSnapshot().interactions.map((i) => i.interactionId)).toContain('it-skew')
+  })
 })
 
 // ───────────────────────────── 交互：应答 ─────────────────────────────
