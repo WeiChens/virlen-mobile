@@ -52,6 +52,13 @@
  *   （2026-11 真机：从「固定在滚动区之上」改到「内容里」—— 不再占一条常驻竖条，也不再因它
  *   出现/消失改变滚动容器高度。）
  *
+ * ## 两处加载提示都**慢才出现**（新约定，见 `lib/pending.ts`）
+ *
+ * 「加载消息…」与续页按钮的「加载中…」都由 `useDelayedFlag` 兜住 100ms：网好的时候拉一页
+ * 只要几十毫秒，先画出一句提示、下一帧又抹掉，比「什么都不显示、内容直接出现」更卡。
+ * 但**拦截**（按钮能不能再点）与**空态说什么**依旧看立刻为真的那个标志 —— 那 100ms 里
+ * 宁可什么都不说，也不能说「这个会话还没有消息」（那是假话）。
+ *
  * ## 其它三条既有纪律
  *
  * - **尾部（流式气泡 / 错误 / 待应答卡片）不参与镜像里的行序**：它是倒置容器里的**第一个**
@@ -78,6 +85,7 @@ import {
 } from 'react'
 import type { InteractionDTO, MessageDTO } from 'virlen-remote'
 import { useStoreSelector } from '../../lib/store'
+import { useDelayedFlag } from '../../lib/pending'
 import { chatStore } from '../../store/chat'
 import {
   dedupeMessages,
@@ -468,8 +476,14 @@ function StreamingBubble({
 /** 首尾与空态拿到的**动态数据**（这几个组件都直接由本组件渲染，不参与行序倒置）。 */
 interface ListContext {
   hasOlder: boolean
+  /** 续页在途，**慢才为真**（>100ms）：决定「加载中…」与转圈。 */
   loadingOlder: boolean
+  /** 续页在途，**立刻为真**：决定那颗按钮能不能再点。 */
+  olderBusy: boolean
+  /** 消息窗口在拉，**慢才为真**：决定「加载消息…」什么时候出现。 */
   loadingMessages: boolean
+  /** 消息窗口在拉，**立刻为真**：决定空态该不该闭嘴（见 `ListEmpty`）。 */
+  messagesBusy: boolean
   hasMessages: boolean
   onLoadOlder: () => void
   error?: string
@@ -492,26 +506,45 @@ const ListTop = ({ context }: { context: ListContext }) => (
       <button
         type="button"
         className="chat__load-older"
-        disabled={context.loadingOlder}
+        /* 置灰看立刻为真的那个：弹回 60ms 的请求不该在这 60ms 里被再点一次 */
+        disabled={context.olderBusy}
+        aria-busy={context.olderBusy}
         onClick={context.onLoadOlder}
       >
+        {/* 续页是一次 RPC（`host.session.messages`），没有 spinner 时按钮只是「不动」 */}
+        {context.loadingOlder && <span className="spinner spinner--sm" aria-hidden="true" />}
         {context.loadingOlder ? '加载中…' : '加载更早的消息'}
       </button>
     )}
-    {context.loadingMessages && context.hasMessages && <p className="chat__loading">加载消息…</p>}
-  </div>
-)
-
-/** 空态：加载中 / 这个会话还没有消息。 */
-const ListEmpty = ({ context }: { context: ListContext }) => (
-  <div className="chat__list-empty">
-    {context.loadingMessages ? (
-      <p className="chat__loading">加载消息…</p>
-    ) : (
-      <p className="chat__empty">这个会话还没有消息</p>
+    {context.loadingMessages && context.hasMessages && (
+      <p className="chat__loading">
+        <span className="spinner spinner--sm" aria-hidden="true" />
+        加载消息…
+      </p>
     )}
   </div>
 )
+
+/**
+ * 空态：加载中 / 这个会话还没有消息。
+ *
+ * ⚠️ 这里是**三态**而不是两态（`messagesBusy` × `loadingMessages`）：拉窗口的头 100ms 里
+ * 既不该写「加载消息…」（可能一眨眼就结束了，闪一下更糟），也**绝不能**写「这个会话还没有消息」
+ * —— 那是对这 100ms 的假话。什么都不说才是当时唯一正确的话。
+ */
+const ListEmpty = ({ context }: { context: ListContext }) => {
+  const hint = context.loadingMessages ? (
+    <p className="chat__loading">
+      <span className="spinner spinner--sm" aria-hidden="true" />
+      加载消息…
+    </p>
+  ) : null
+  return (
+    <div className="chat__list-empty">
+      {context.messagesBusy ? hint : <p className="chat__empty">这个会话还没有消息</p>}
+    </div>
+  )
+}
 
 /**
  * 列表尾部：流式气泡 / 错误 / 待应答卡片。
@@ -789,10 +822,21 @@ export default function MessageList({
   /** 卸载时清掉兜底定时器。 */
   useEffect(() => () => clearPendingOlder(), [clearPendingOlder])
 
+  /*
+   * 两把尺子（见 `lib/pending.ts`）：store 给的标志**立刻为真**，在这里只用于「挡」；
+   * 决定「画什么」的是两个延时版 —— 快请求（<100ms）全程一次都不为真，界面上什么都不闪。
+   *
+   * ⚠️ 钩子必须无条件调用，所以提到 `context` 之前（不能写进对象字面量里图省事）。
+   */
+  const slowOlder = useDelayedFlag(loadingOlder)
+  const slowMessages = useDelayedFlag(loadingMessages)
+
   const context: ListContext = {
     hasOlder,
-    loadingOlder,
-    loadingMessages,
+    loadingOlder: slowOlder,
+    olderBusy: loadingOlder,
+    loadingMessages: slowMessages,
+    messagesBusy: loadingMessages,
     hasMessages: messages.length > 0,
     onLoadOlder: loadOlder,
     error,

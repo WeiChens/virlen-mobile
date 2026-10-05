@@ -525,15 +525,18 @@ class ConnectionStore extends Store<ConnectionState> {
    * 手动重连（自动重连失败后由 UI 提供，或用户主动点）。
    *
    * 复用已保存的设备信息重建链路（**不是**重新扫码 —— 配对令牌仍在手机本地）。
+   *
+   * ⚠️ 返回 Promise（以前是 `void`）：它跑的是「信令 → ICE → 握手」这一整段，
+   * 手机上就是好几秒；调用方（通讯面板的「立即重连」）要靠它把按钮转圈到有结论为止，
+   * 而不是自己猜「大概好了吧」。
    */
-  reconnectNow(): void {
+  async reconnectNow(): Promise<void> {
     const opts = this.lastOptions
     if (!opts) return
     this.reconnectAttempt = 0
     this.clearReconnectTimer()
-    void this.connect({ ...opts, mode: 'reconnect' }).then((ok) => {
-      if (!ok) this.scheduleReconnect()
-    })
+    const ok = await this.connect({ ...opts, mode: 'reconnect' })
+    if (!ok) this.scheduleReconnect()
   }
 
   /** 链路状态上报（`Transport` 的 `onStateChange`）。 */

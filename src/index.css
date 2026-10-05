@@ -132,6 +132,16 @@ body {
   }
 }
 
+/*
+ * 内联加载指示（spinner）—— 「已经发出去、还在等电脑侧答复」的统一手势。
+ *
+ * 纪律（本次加的一条）：**凡是点一下就要等返回值的动作，按钮上必须长出它来**。
+ * 手机上没有 hover、也没有鼠标指针，一个不动的按钮与一个坏掉的按钮长得一模一样 ——
+ * 用户唯一能拿到的信号就是「按钮变了、点不动了」。
+ *
+ * 两档尺寸：默认 14px 给整行提示用，`--sm` 给按钮内用（38px 高的小按钮里放 14px
+ * 会把文案挤到换行）。
+ */
 .spinner {
   width: 14px;
   height: 14px;
@@ -139,7 +149,25 @@ body {
   border-top-color: var(--accent);
   border-radius: 50%;
   display: inline-block;
+  /* 尺寸不跟着 `--fs` 走：它靠视觉重量与旁边的文字「配平」，字号大了反而糊 */
+  flex: none;
   animation: spin 0.8s linear infinite;
+}
+.spinner--sm {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+/*
+ * 实心按钮（品牌蓝 / 危险色）上的对比档。
+ *
+ * 默认那套（灰轨道 + 蓝头）摆在蓝底上等于看不见 —— 那是同一个色相压同一个色相。
+ * 这里改成「半透明白轨道 + `currentColor` 的头」，于是它自动跟随按钮文字色：
+ * 蓝底白字、红底红字，两处都不必再各写一份。
+ */
+.spinner--on-fill {
+  border-color: rgba(255, 255, 255, 0.4);
+  border-top-color: currentColor;
 }
 @keyframes spin {
   to {

@@ -124,6 +124,12 @@
   color: var(--accent-text);
   font-size: calc(12px * var(--fs));
 }
+/* 在途提示（「切换中…」）：flex 才能让 spinner 与文字居中，`flex: none` 不被长模型名挤掉 */
+.sheet__row-hint--busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .sheet__hint {
   margin: 0;
   font-size: calc(12px * var(--fs));

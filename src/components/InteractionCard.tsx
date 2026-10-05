@@ -7,11 +7,19 @@
  *  2. **卡片可能在应答前失效**：电脑上先处理了、或会话被取消 → 电脑侧会推 `interaction.resolved`，
  *     store 收到即移除卡片；若应答晚到，电脑侧返回 `accepted:false`，我们只提示、不报错。
  *
+ * 再加一条交互约定：应答是一次 RPC，**在途时按下的那颗按钮转圈、且三颗全部置灰**。
+ * 高风险场景下这一点尤其重要 —— 用户勾完「我已核对」再点「确认放行」，最不想看到的就是
+ * 「我到底点上没点上」；而重复点只会换回一句「该请求已在电脑上处理」。
+ *
+ * ⚠️ 转圈**慢（>100ms）才出现**（`usePending`）：网络好的时候闪一下 loading 比不显示更卡，
+ * 但**拦截与置灰立刻生效** —— 视觉可以等，重复应答不能等（见 `lib/pending.ts`）。
+ *
  * 终端内确认（`presentation === 'terminal'`）的特例：手机**只能原样放行或拒绝**（不能编辑命令）——
  * 这是设计意图（该类授权的价值在于「当面核对命令」），故卡片明确写出「将执行上面的原始命令」。
  */
 import { useState } from 'react'
-import type { InteractionDTO } from 'virlen-remote'
+import type { AnswerAction, InteractionDTO } from 'virlen-remote'
+import { usePending } from '../lib/pending'
 import { chatStore } from '../store/chat'
 import './InteractionCard.css'
 
@@ -24,23 +32,26 @@ export default function InteractionCard({ interaction }: Props) {
   const [reply, setReply] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [ack, setAck] = useState(false)
-  const [busy, setBusy] = useState(false)
+  /**
+   * 应答的在途态（`allow` / `deny` / `shelve` / `choose`）。
+   *
+   * 为何记「是哪个动作」而不是一个布尔：三颗按钮同时置灰时，用户得能看出自己按的是哪个
+   * —— 转圈只长在被按下的那颗上。
+   *
+   * 为何在途时**全部**置灰：应答是「一次定性」的（电脑侧要么接受、要么已失效），
+   * 允许在应答回来之前再点另一个只会得到一句「该请求已在电脑上处理」的糊弄话。
+   * 同一把闸刀也挡住了同一颗按钮的连击（卡片上的授权确认尤其容易被连点）。
+   */
+  const { pending, busy, run } = usePending<AnswerAction>()
 
   const isChoice = interaction.kind === 'choice'
   const isTerminal = interaction.presentation === 'terminal'
   const high = interaction.tier === 'high'
   const options = interaction.options ?? []
 
-  const run = async (
-    action: 'allow' | 'deny' | 'shelve' | 'choose',
-    opts: { value?: unknown; confirmed?: boolean } = {},
-  ) => {
-    setBusy(true)
-    try {
-      await chatStore.answer(interaction.interactionId, action, opts)
-    } finally {
-      setBusy(false)
-    }
+  /** 提交一次应答（`opts` 是协议字段，不进钩子）。 */
+  const answer = (action: AnswerAction, opts: { value?: unknown; confirmed?: boolean } = {}) => {
+    run(action, () => chatStore.answer(interaction.interactionId, action, opts))
   }
 
   const toggleOption = (option: string) => {
@@ -55,14 +66,14 @@ export default function InteractionCard({ interaction }: Props) {
   /** 允许 / 确认：高风险先走二次确认面板 */
   const primary = () => {
     if (isChoice) {
-      void run('choose', { value: { selected, customReply: reply.trim() } })
+      answer('choose', { value: { selected, customReply: reply.trim() } })
       return
     }
     if (high && !confirming) {
       setConfirming(true)
       return
     }
-    void run('allow', { confirmed: high ? true : undefined })
+    answer('allow', { confirmed: high ? true : undefined })
   }
 
   const primaryLabel = isChoice ? '提交' : isTerminal ? '原样执行' : '允许'
@@ -144,8 +155,10 @@ export default function InteractionCard({ interaction }: Props) {
           type="button"
           className="btn btn--small btn--ghost"
           disabled={busy}
-          onClick={() => void run('deny')}
+          aria-busy={busy}
+          onClick={() => answer('deny')}
         >
+          {pending === 'deny' && <span className="spinner spinner--sm" aria-hidden="true" />}
           {/* 与桌面弹窗同形：提问是「取消」，授权是「拒绝」（电脑侧两种都落到 deny） */}
           {isChoice ? '取消' : '拒绝'}
         </button>
@@ -154,17 +167,25 @@ export default function InteractionCard({ interaction }: Props) {
             type="button"
             className="btn btn--small btn--ghost"
             disabled={busy}
-            onClick={() => void run('shelve')}
+            aria-busy={busy}
+            onClick={() => answer('shelve')}
           >
+            {pending === 'shelve' && <span className="spinner spinner--sm" aria-hidden="true" />}
             暂存
           </button>
         )}
         <button
           type="button"
           className="btn btn--primary btn--small"
-          disabled={busy || (high && confirming && !ack) || (isChoice && selected.length === 0 && !reply.trim())}
+          disabled={
+            busy || (high && confirming && !ack) || (isChoice && selected.length === 0 && !reply.trim())
+          }
+          aria-busy={busy}
           onClick={primary}
         >
+          {(pending === 'allow' || pending === 'choose') && (
+            <span className="spinner spinner--sm spinner--on-fill" aria-hidden="true" />
+          )}
           {high && confirming ? '确认放行' : primaryLabel}
         </button>
       </div>

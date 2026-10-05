@@ -8,6 +8,13 @@
  *
  * **已配对的电脑排在「扫码添加电脑」之前** —— 配对过一次之后，回到这一页十有八九是连它们，
  * 而「扫码添加」是低频动作。原来的顺序把最高频的入口压在最低频的那个大蓝按钮下面。
+ *
+ * 一条贯穿全页的交互约定：**每一个要等电脑侧（或服务端）答复的按钮都在途自证** ——
+ * 「连接」转圈变成「连接中…」、「保存」在解析 ICE 时置灰。手机上没有 hover，也没有指针，
+ * 一个纹丝不动的按钮与一个坏掉的按钮长得一模一样。
+ *
+ * ⚠️ 并且**慢（>100ms）才显示**（`usePending`）：网络好的时候闪一下 loading 比不显示更卡；
+ * 而置灰与「挡住连点」依旧立刻生效（见 `lib/pending.ts`）。
  */
 import { useEffect, useRef, useState } from 'react'
 import QrScanner from '../../components/QrScanner'
@@ -20,6 +27,7 @@ import {
   type PairingPayload,
 } from 'virlen-remote'
 import { connectionStore, type ConnectErrorReason } from '../../store/connection'
+import { usePending } from '../../lib/pending'
 import {
   MAX_DEVICE_NAME_LEN,
   deviceLabel,
@@ -78,7 +86,11 @@ interface ConnectTarget {
 
 /** 连到指定电脑（`token` = 授权凭证；扫码时是一次性票据）。 */
 function connectTo(hostKey: string, name: string, token: string, target: ConnectTarget = {}) {
-  void connectionStore.connect({
+  /*
+   * 返回 Promise（以前是 `void`）：「正在连哪一台」的 spinner 要等它有结论才熄，
+   * 而 `connect()` 的 resolve 就是那个结论（成功 / 报错都不会挂着不回）。
+   */
+  return connectionStore.connect({
     hostId: hostKey,
     deviceName: name,
     token,
@@ -101,7 +113,28 @@ export default function Login() {
   /** 外观设置（主题 / 界面大小）—— 登录页也能改：用户很可能就是因为「太黑」才来这里。 */
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  const busy = conn.status === 'connecting'
+  /**
+   * 正在发起连接的**目标**（已配对电脑用 `hostKey`；扫码 / 手动粘贴 / 配对链接用 `scan` /
+   * `manual` / `link`——它们在本机没有一行记录可标）。
+   *
+   * 为什么要记到这么细：`connect()` 是异步的（信令 → ICE → 握手；现场配对还要等用户在电脑上
+   * 点确认，可长达一分钟）。多台电脑时「页面上某处有个 spinner」是不够的 —— 用户点的是哪一台，
+   * 就得是哪一台的按钮在转。
+   *
+   * ⚠️ 两个名字是两个时标（见 `lib/pending.ts`）：`connectingKey` **慢（>100ms）才为真**
+   * （决定转圈与「连接中…」），`connectBusy` **立刻为真**（决定置灰与挡住连点）。
+   */
+  const { pending: connectingKey, busy: connectBusy, run: beginConnect } = usePending<string>()
+  /** ICE 配置解析在途（展开面板 / 保存 / 恢复默认各触发一次网络请求）。 */
+  const { pending: icePending, busy: iceBusy, run: runIce } = usePending<'ice'>()
+
+  /**
+   * 页面级「正在连」：状态机口径（`connecting`，自动重连也走它）**或**本机这次点击。
+   *
+   * 两个都要：状态机的翻身要等到 `connect()` 真正开跑（同一拍之后），而 `connectBusy`
+   * 从按下的那一瞬就是真的 —— 少一个，就会有一小段「按钮还点得动」。
+   */
+  const busy = conn.status === 'connecting' || connectBusy
 
   /**
    * 查询各台电脑的在线状态（`POST /status`，**不加入房间**）。
@@ -137,18 +170,20 @@ export default function Login() {
    * 三个入口共用它：App 内扫码、手动粘贴、以及**从 `?t=` 链接打开**（系统相机 / 微信扫码）。
    * `parsePairingPayload` 三种输入都认（URL / `vrp1:` 串 / 旧明文 JSON）。
    */
-  const startPairing = (text: string, invalidMsg: string): boolean => {
+  const startPairing = (text: string, invalidMsg: string, key = 'scan'): boolean => {
     const payload: PairingPayload | null = parsePairingPayload(text)
     if (!payload) {
       setParseError(invalidMsg)
       return false
     }
     // 手上是**一次性票据**：电脑端会弹窗等用户点确认，这一步可能停在几十秒
-    connectTo(payload.host, payload.name, payload.ticket, {
-      signalUrl: payload.signal,
-      room: payload.room,
-      pairing: true,
-    })
+    beginConnect(key, () =>
+      connectTo(payload.host, payload.name, payload.ticket, {
+        signalUrl: payload.signal,
+        room: payload.room,
+        pairing: true,
+      }),
+    )
     return true
   }
 
@@ -159,7 +194,7 @@ export default function Login() {
 
   const handleManual = () => {
     // 与扫码同一条路径（同是票据，同样要等电脑端确认）
-    if (startPairing(manual.trim(), '配对串格式不正确')) setManual('')
+    if (startPairing(manual.trim(), '配对串格式不正确', 'manual')) setManual('')
   }
 
   /**
@@ -180,7 +215,7 @@ export default function Login() {
     }
     if (!code) return
     window.history.replaceState(null, '', window.location.pathname)
-    startPairing(code, '配对链接无效（不是 Virlen 配对码）')
+    startPairing(code, '配对链接无效（不是 Virlen 配对码）', 'link')
     // 只在挂载时跑一次；`startPairing` 每轮渲染都会重建，故意不进依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -198,6 +233,16 @@ export default function Login() {
     setIceError(resolved.customError ?? null)
   }
 
+  /**
+   * 解析一次 ICE 并管好「在途」。
+   *
+   * 三个入口（展开面板 / 保存 / 恢复默认）共用它：解析可能真的要去服务端取（`GET /ice`），
+   * 网络慢的时候按钮一动不动，用户只会以为「保存没生效」。
+   */
+  const resolveIce = () => {
+    runIce('ice', () => loadIce())
+  }
+
   const handleSaveIce = () => {
     const result = saveCustomIce(iceText)
     // 显式比较：`{ok:true} | {ok:false}` 联合类型在真值判断下不窄化（与电脑端同一个坑）
@@ -205,14 +250,14 @@ export default function Login() {
       setIceError(result.error)
       return
     }
-    void loadIce()
+    resolveIce()
   }
 
   const handleResetIce = () => {
     saveCustomIce('')
     setIceText('')
     setIceError(null)
-    void loadIce()
+    resolveIce()
   }
 
   if (scanning) {
@@ -293,11 +338,14 @@ export default function Login() {
             key={d.hostKey}
             device={d}
             busy={busy}
+            connecting={connectingKey === d.hostKey}
             online={online.get(d.hostKey)}
             onConnect={() =>
               // 已配对设备：手上是**长期凭证**，电脑端立刻应答 —— 不带 `pairing`，保持 4 秒快失败
               // 名字用 `deviceLabel`（本地改的名字优先）：连接中的提示也应该是自己起的名字
-              connectTo(d.hostKey, deviceLabel(d), d.grant, { signalUrl: d.signalUrl, room: d.room })
+              beginConnect(d.hostKey, () =>
+                connectTo(d.hostKey, deviceLabel(d), d.grant, { signalUrl: d.signalUrl, room: d.room }),
+              )
             }
             onRemove={() => devicesStore.remove(d.hostKey)}
           />
@@ -322,8 +370,15 @@ export default function Login() {
           value={manual}
           onChange={(e) => setManual(e.target.value)}
         />
-        <button type="button" className="btn btn--small" disabled={busy || !manual.trim()} onClick={handleManual}>
-          连接
+        <button
+          type="button"
+          className="btn btn--small"
+          disabled={busy || !manual.trim()}
+          aria-busy={busy}
+          onClick={handleManual}
+        >
+          {connectingKey === 'manual' && <span className="spinner spinner--sm" aria-hidden="true" />}
+          {connectingKey === 'manual' ? '连接中…' : '连接'}
         </button>
         <p className="login__tip">
           提示：用系统相机 / 微信直接扫电脑端那张码，会自动打开本页并开始配对；
@@ -339,11 +394,12 @@ export default function Login() {
       <details
         className="login__advanced"
         onToggle={(e) => {
-          if ((e.target as HTMLDetailsElement).open) void loadIce()
+          if ((e.target as HTMLDetailsElement).open) resolveIce()
         }}
       >
         <summary>高级设置：ICE 服务器（STUN / TURN）</summary>
-        {iceStatus && <p className="login__tip">当前生效：{iceStatus}</p>}
+        {icePending === 'ice' && <p className="login__tip">正在解析 ICE 配置…</p>}
+        {icePending !== 'ice' && iceStatus && <p className="login__tip">当前生效：{iceStatus}</p>}
         {iceError && <p className="login__tip login__tip--warn">自定义配置有问题：{iceError}</p>}
         <textarea
           className="login__textarea"
@@ -354,10 +410,22 @@ export default function Login() {
           onChange={(e) => setIceText(e.target.value)}
         />
         <div className="login__ice-actions">
-          <button type="button" className="btn btn--small" onClick={handleSaveIce}>
-            保存
+          <button
+            type="button"
+            className="btn btn--small"
+            disabled={busy || iceBusy}
+            aria-busy={iceBusy}
+            onClick={handleSaveIce}
+          >
+            {icePending === 'ice' && <span className="spinner spinner--sm" aria-hidden="true" />}
+            {icePending === 'ice' ? '解析中…' : '保存'}
           </button>
-          <button type="button" className="btn btn--small btn--ghost" onClick={handleResetIce}>
+          <button
+            type="button"
+            className="btn btn--small btn--ghost"
+            disabled={iceBusy}
+            onClick={handleResetIce}
+          >
             恢复服务端默认
           </button>
         </div>
@@ -376,12 +444,20 @@ export default function Login() {
 function DeviceRow({
   device,
   busy,
+  connecting,
   online,
   onConnect,
   onRemove,
 }: {
   device: PairedDevice
   busy: boolean
+  /**
+   * 正在连的就是这一台 —— 决定按钮转圈 + 文案变「连接中…」。
+   *
+   * ⚠️ 它是**慢才为真**的（>100ms，见 `lib/pending.ts`）：网好的时候闪一下「连接中…」
+   * 反而像卡了一下；而「挡住连点」不靠它（那一拍由 `busy` 兜住）。
+   */
+  connecting: boolean
   online: boolean | undefined
   onConnect: () => void
   onRemove: () => void
@@ -474,8 +550,16 @@ function DeviceRow({
             删除
           </button>
         </div>
-        <button type="button" className="btn btn--small" disabled={busy || expired} onClick={onConnect}>
-          {expired ? '需重新扫码' : '连接'}
+        <button
+          type="button"
+          className="btn btn--small"
+          /* 这一颗也跟着置灰：一次只连一台（`busy` 已含「本机刚点下去的那一拍」） */
+          disabled={busy || expired}
+          aria-busy={busy}
+          onClick={onConnect}
+        >
+          {connecting && <span className="spinner spinner--sm" aria-hidden="true" />}
+          {expired ? '需重新扫码' : connecting ? '连接中…' : '连接'}
         </button>
       </div>
     </div>

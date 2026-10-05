@@ -68,3 +68,9 @@
   color: var(--fg-faint);
   line-height: 1.5;
 }
+/* 加载中的那一句是「spinner + 文字」：flex 才能两者居中（行高维持 1.5，与旁边的提示一致） */
+.picker__hint--busy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

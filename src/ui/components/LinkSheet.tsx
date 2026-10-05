@@ -24,6 +24,7 @@
  */
 import type { ReactNode } from 'react'
 import { useStore } from '../../lib/store'
+import { usePending } from '../../lib/pending'
 import { connectionStore } from '../../store/connection'
 import { linkStore } from '../../store/link'
 import { lastIceResolution } from '../../api/ice'
@@ -55,6 +56,25 @@ export default function LinkSheet({ onClose }: { onClose: () => void }) {
   const ice = lastIceResolution()
 
   const connected = conn.link === 'open'
+  /**
+   * 「立即重连」自己的在途态（点击到 `connect()` 有结论）—— 慢（>100ms）才显示转圈。
+   *
+   * 为何不只看 store：`reconnectNow()` 是异步的，而状态机要等它真正开跑才翻到
+   * `connecting` —— 中间那一小段若什么都不变，就会看到「点了没反应」。
+   */
+  const { pending, busy, run } = usePending<'reconnect'>()
+  /*
+   * 「重连这件事正在跑」——两路都算：
+   * - 本机点下去的那一次（`pending`，**慢才显示**：网好时不该闪）；
+   * - 状态机自己那一侧（`connecting` / 自动重连等待期）—— 它们是秒级的，不必也不该延时。
+   * 漏掉任何一种，按钮都会在中间那一段变回可点、文案变回「立即重连」，看着就像上一次没生效。
+   */
+  const linkBusy = conn.status === 'connecting' || conn.reconnecting !== undefined
+  const reconnectBusy = pending === 'reconnect' || linkBusy
+
+  const reconnect = () => {
+    run('reconnect', () => connectionStore.reconnectNow())
+  }
   // 按钮与面板同一份档位判定（`signalTone`）：两处各写一遍只会变成两种颜色
   const tone: Tone = signalTone(conn.link, link.path)
 
@@ -202,10 +222,13 @@ export default function LinkSheet({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 className="btn btn--small"
-                disabled={conn.status !== 'online'}
-                onClick={() => connectionStore.reconnectNow()}
+                disabled={conn.status !== 'online' || busy || linkBusy}
+                aria-busy={busy || linkBusy}
+                onClick={reconnect}
               >
-                立即重连
+                {/* 重连要跑信令 + ICE + 握手，手机上好几秒 —— 按钮自己得说「在跑」 */}
+                {reconnectBusy && <span className="spinner spinner--sm" aria-hidden="true" />}
+                {reconnectBusy ? '重连中…' : '立即重连'}
               </button>
               <button
                 type="button"

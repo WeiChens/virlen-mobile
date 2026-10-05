@@ -6,11 +6,28 @@
  *
  * ⚠️ 三者都只做**展示 + 回调**：候选集来自电脑侧（`host.agent.list` / `host.model.list` /
  * `host.workspace.list`），合法性由电脑侧独立校验（手机端不预判、也不自造候选）。
+ *
+ * 三个候选集都是 RPC 拉来的，所以「加载中」那一句必须带 spinner：用户点开选择器时
+ * 看到的是一句不动的「加载模型…」，分不清是在拉还是拉挂了（约定见 `index.css` 的 `.spinner`）。
+ *
+ * ⚠️ 但**慢（>100ms）才说**（`useDelayedFlag`）：拉到了就直画；没拉到又还没超过 100ms 时
+ * 两边的话都不能说 —— 尤其**不能**说「电脑侧没有…」（那是这 100ms 里的假话），只能什么都不画。
  */
 import type { AgentOptionDTO, ModelProviderDTO, WorkspaceOptionDTO } from 'virlen-remote'
 import { baseNameOf } from '../../lib/session-groups'
+import { useDelayedFlag } from '../../lib/pending'
 import { IconCheck } from './icons'
 import './pickers.css'
+
+/** 「加载中」的提示行：spinner + 文字（三处共用，避免各写一份）。 */
+function LoadingHint({ text }: { text: string }) {
+  return (
+    <p className="picker__hint picker__hint--busy">
+      <span className="spinner spinner--sm" aria-hidden="true" />
+      {text}
+    </p>
+  )
+}
 
 interface AgentPickerProps {
   agents: AgentOptionDTO[]
@@ -26,7 +43,9 @@ interface AgentPickerProps {
  * 不给一条回去的路，用户切过去就只能靠重进面板了。
  */
 export function AgentPicker({ agents, loading, current, onPick }: AgentPickerProps) {
-  if (loading && agents.length === 0) return <p className="picker__hint">加载 Agent…</p>
+  const slow = useDelayedFlag(loading)
+  // 没拉到 + 还没慢 → 什么都不画（说「没有」是假话，见文件头）
+  if (agents.length === 0 && loading) return slow ? <LoadingHint text="加载 Agent…" /> : null
   if (agents.length === 0) return <p className="picker__hint">电脑侧没有可选的 Agent</p>
   return (
     <div className="picker">
@@ -77,7 +96,9 @@ interface ModelPickerProps {
 }
 
 export function ModelPicker({ providers, loading, current, onPick }: ModelPickerProps) {
-  if (loading && providers.length === 0) return <p className="picker__hint">加载模型…</p>
+  const slow = useDelayedFlag(loading)
+  // 同上：快的时候什么都不说
+  if (providers.length === 0 && loading) return slow ? <LoadingHint text="加载模型…" /> : null
   if (providers.length === 0) return <p className="picker__hint">电脑侧没有已启用的模型服务</p>
   return (
     <div className="picker">
@@ -112,7 +133,11 @@ interface WorkspacePickerProps {
 }
 
 export function WorkspacePicker({ workspaces, loading, current, onPick }: WorkspacePickerProps) {
-  if (loading && workspaces.length === 0) return <p className="picker__hint">加载工作目录…</p>
+  const slow = useDelayedFlag(loading)
+  // 同上：快的时候什么都不说
+  if (workspaces.length === 0 && loading) {
+    return slow ? <LoadingHint text="加载工作目录…" /> : null
+  }
   if (workspaces.length === 0) {
     return (
       <p className="picker__hint">

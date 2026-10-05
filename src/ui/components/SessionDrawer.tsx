@@ -11,6 +11,7 @@
 import { useState } from 'react'
 import type { SessionSummaryDTO } from 'virlen-remote'
 import { useStore } from '../../lib/store'
+import { useDelayedFlag } from '../../lib/pending'
 import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import {
@@ -42,6 +43,14 @@ export default function SessionDrawer({ open, onClose }: Props) {
    * （`groupNeedsAttention`），不会出现「藏起来就丢信息」。
    */
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  /*
+   * 「加载会话…」**慢才出现**（见 `lib/pending.ts`）：拉一个列表通常只有几十毫秒，
+   * 先画一句提示再抹掉，比「什么都不显示、列表直接出现」更卡。
+   *
+   * ⚠️ 钩子必须在下面那个提前 `return null` **之前**（钩子规则：不能条件调用）。
+   */
+  const slowLoading = useDelayedFlag(chat.loadingSessions)
 
   if (!open) return null
 
@@ -94,9 +103,21 @@ export default function SessionDrawer({ open, onClose }: Props) {
         </header>
 
         <div className="drawer__body">
-          {chat.sessions.length === 0 && (
-            <p className="drawer__hint">{chat.loadingSessions ? '加载会话…' : '电脑上还没有会话'}</p>
-          )}
+          {/*
+            空列表时只有两种话可说：还在拉（**慢才说**）或确实一个都没有。
+            拉窗口的头 100ms 里两句都别说 —— 「电脑上还没有会话」在那时是假话。
+          */}
+          {chat.sessions.length === 0 &&
+            (chat.loadingSessions
+              ? slowLoading && (
+                  <p className="drawer__hint drawer__hint--busy">
+                    <span className="spinner spinner--sm" aria-hidden="true" />
+                    加载会话…
+                  </p>
+                )
+              : (
+                  <p className="drawer__hint">电脑上还没有会话</p>
+                ))}
           {groups.map((group) => {
             const isOpen = expanded[group.key] === true
             // 高亮只在收起态生效：展开后内容自现，再高亮反而多余

@@ -8,7 +8,14 @@
  * 2. 链路横幅 / **会话错误横幅** / 暂停横幅 / 待应答卡片 / 一次性提示；
  * 3. 消息区（`MessageList`）：**倒置列表**（V6：数据倒序 + `scaleY(-1)`，§34）、工具气泡带工具名、
  *    空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位；
- * 4. 输入区（工作中变「停止」）。
+ * 4. 输入区（工作中变「停止」）；
+ *
+ * 凡是「点一下就要等电脑侧返回值」的按钮（发送 / 停止 / 继续）都自带 in-flight 状态：
+ * 转圈 + 置灰。手机上没有 hover、也没有指针，不动的按钮与坏掉的按钮长得一样 ——
+ * 这条约定（含 spinner 的两档样式）写在 `index.css` 的 `.spinner` 上。
+ *
+ * ⚠️ 并且**慢（>100ms）才显示**：网络好的时候闪一下 loading 比不显示更卡。
+ * 三个动作共用 `usePending` 一个实例（视觉可以等、拦截不能等，见 `lib/pending.ts`）。
  *
  * 不存在「本地方便地先把会话建出来」的路径：新对话只存在于内存（`chatStore.draft`），
  * 发第一条消息时才创建会话（用户拍板，见 `NewChatPanel`）。
@@ -25,6 +32,7 @@ import {
   type MessageQuote,
 } from 'virlen-remote'
 import { useStore, useStoreSelector } from '../../lib/store'
+import { usePending } from '../../lib/pending'
 import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import { linkStore } from '../../store/link'
@@ -82,6 +90,16 @@ export default function Chat() {
   const [pendingQuotes, setPendingQuotes] = useState<MessageQuote[]>([])
   /** 一次性提示（复制成功 / 已加入引用 / 操作失败）。 */
   const [toast, setToast] = useState<string | null>(null)
+  /**
+   * 输入区三个动作的在途态（发送 / 停止 / 继续）—— 收口在 `usePending`。
+   *
+   * 它回答两个不同的问题（详见 `lib/pending.ts`）：`busy` **立刻**为真（置灰、挡重复提交），
+   * `pending === 'send' | 'stop' | 'resume'` **慢才**为真（转圈 + 「…中」文案）。
+   *
+   * 为何不放进 store：它描述的是「这一次点击」，而不是会话的任何持久事实 —— RPC 的
+   * `await` 就是它的生命周期，页面自己拿着最不容易漏、也最不容易留残留。
+   */
+  const { pending, busy, run } = usePending<'send' | 'stop' | 'resume'>()
   /**
    * 消息区的把手（`MessageList`）：滚动、跟随底部、续页都在那一层。
    *
@@ -242,14 +260,20 @@ export default function Chat() {
   const submit = () => {
     const text = input
     const quotes = pendingQuotes
+    // 无会话时由 store 负责「先创建再发送」（发送这一刻才创建）
+    const accepted = run('send', () => chatStore.send(text, quotes))
+    /*
+     * ⚠️ 没被受理就**什么都不做**：`run` 里那把同步闸刀挡的就是「回车连击 / 手滑点两下」。
+     * 若无会话，`send` 会**先建会话再发**，放过一次就是并行建出两个空会话；
+     * 而且清输入框必须发生在「确认受理」之后 —— 否则会字没了、消息也没发出去。
+     */
+    if (!accepted) return
     setInput('')
     setPendingQuotes([])
     // 缩回一行：否则发完一条长消息，输入框还占着好几行高度（里面却已经空了）
     if (inputRef.current) inputRef.current.style.height = ''
     // 发出即落到最新一屏（此刻用户的眼睛在输入框上，留在半截历史里会看不到自己刚发的消息）
     listRef.current?.scrollToBottom()
-    // 无会话时由 store 负责「先创建再发送」（发送这一刻才创建）
-    void chatStore.send(text, quotes)
   }
 
   /* ─────────────────── §36 长按菜单 ─────────────────── */
@@ -327,7 +351,18 @@ export default function Chat() {
   }
 
   const stop = () => {
-    if (currentId) void chatStore.cancel(currentId)
+    if (!currentId) return
+    /*
+     * 转圈的收尾**不看电脑侧的状态**：停止只是「请求已受理」，`working` 要等电脑侧推运行时
+     * 事件才会翻。绑在这次 RPC 上才不会出现「点了没反应」—— 至于 run 有没有真的停下来，
+     * 尾部那个「已暂停 / 空闲」才是权威。
+     */
+    run('stop', () => chatStore.cancel(currentId))
+  }
+
+  const resume = () => {
+    if (!currentId) return
+    run('resume', () => chatStore.resume(currentId))
   }
 
   const startNewChat = () => {
@@ -430,8 +465,13 @@ export default function Chat() {
           <button
             type="button"
             className="btn btn--small btn--primary"
-            onClick={() => void chatStore.resume(currentId)}
+            disabled={busy}
+            aria-busy={busy}
+            onClick={resume}
           >
+            {pending === 'resume' && (
+              <span className="spinner spinner--sm spinner--on-fill" aria-hidden="true" />
+            )}
             继续
           </button>
         </div>
@@ -558,18 +598,35 @@ export default function Chat() {
             }}
           />
           {working && can('session.cancel') ? (
-            <button type="button" className="btn btn--danger btn--small" onClick={stop}>
-              停止
+            <button
+              type="button"
+              className="btn btn--danger btn--small"
+              disabled={busy}
+              aria-busy={busy}
+              onClick={stop}
+            >
+              {pending === 'stop' && (
+                <span className="spinner spinner--sm spinner--on-fill" aria-hidden="true" />
+              )}
+              {pending === 'stop' ? '停止中' : '停止'}
             </button>
           ) : (
             <button
               type="button"
               className="btn btn--primary btn--small"
               /* 只引用不写正文也允许发（与桌面同口径：电脑侧会补「请针对引用的消息回复」） */
-              disabled={(!input.trim() && pendingQuotes.length === 0) || (!currentId && !can('session.create'))}
+              disabled={
+                busy ||
+                (!input.trim() && pendingQuotes.length === 0) ||
+                (!currentId && !can('session.create'))
+              }
+              aria-busy={busy}
               onClick={submit}
             >
-              发送
+              {pending === 'send' && (
+                <span className="spinner spinner--sm spinner--on-fill" aria-hidden="true" />
+              )}
+              {pending === 'send' ? '发送中' : '发送'}
             </button>
           )}
         </div>

@@ -262,6 +262,10 @@
 /* 续页兜底按钮（短会话滚不动时也要能点） */
 .chat__load-older {
   align-self: center;
+  /* flex 是为了让在途的 spinner 与文字对齐（`gap` 与 `.btn` 同一档） */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--border-2);
   background: var(--bg-card);
   color: var(--fg-muted);
@@ -297,6 +301,13 @@
   color: var(--fg-ghost);
   font-size: calc(13px * var(--fs));
   text-align: center;
+}
+/* 「加载消息…」现在是「spinner + 文字」，`<p>` 得改成 flex 才能两者居中 */
+.chat__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 .chat__error {
   color: var(--danger);

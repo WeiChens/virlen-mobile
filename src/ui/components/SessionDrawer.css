@@ -82,6 +82,13 @@
   text-align: center;
   padding: 12px 0;
 }
+/* 「加载会话…」是「spinner + 文字」：`host.session.list` 没回来之前得看得出在等 */
+.drawer__hint--busy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
 .drawer__foot {
   display: flex;
   align-items: center;
