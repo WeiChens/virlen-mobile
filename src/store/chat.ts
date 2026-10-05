@@ -19,6 +19,7 @@ import {
   type MessageDTO,
   type MessageQuote,
   type ModelProviderDTO,
+  type RunningToolDTO,
   type SessionSummaryDTO,
   type WorkspaceOptionDTO,
 } from 'virlen-remote'
@@ -49,6 +50,17 @@ export interface ChatState {
    * 正文以为卡死。只带工具名与已累积字符数，**不含参数内容**。
    */
   toolProgress: Record<string, { name: string; chars: number } | undefined>
+  /**
+   * **正在执行中**的工具（电脑侧 `RuntimeDTO.runningTools`）。
+   *
+   * 为何需要：工具的输出要等跑完才作为消息下发，而 `toolProgress` 只管「模型在生成这次
+   * 工具调用的参数」那一段 —— 两者之间（工具真的在跑）过去在本端是**全黑**的，用户只看到
+   * 「正在思考…」以为卡死。现在这个切片让尾部能列出「正在执行 read_file · src/store/chat.ts」。
+   *
+   * ⚠️ 权威在电脑侧（字段缺席 = 此刻没有执行中的工具 → 本端清空）；里面只有工具名与一行
+   * **入参摘要**，没有输出、也没有百分比。
+   */
+  runningTools: Record<string, RunningToolDTO[] | undefined>
   /**
    * 各会话最近一次的**电脑侧错误**（`RuntimeDTO.error`，随 `runtime.changed` 下发）。
    *
@@ -133,6 +145,7 @@ const INITIAL: ChatState = {
   paused: {},
   compacting: {},
   toolProgress: {},
+  runningTools: {},
   sessionError: {},
   dismissedError: {},
   context: {},
@@ -973,6 +986,11 @@ class ChatStore extends Store<ChatState> {
             paused: { ...s.paused, [e.sessionId]: e.runtime.paused === true },
             compacting: { ...s.compacting, [e.sessionId]: e.runtime.compacting === true },
             toolProgress: { ...s.toolProgress, [e.sessionId]: e.runtime.toolProgress ?? undefined },
+            /*
+             * 执行中的工具（§27 姊妹）：字段缺席 = 电脑侧此刻没有在跑的工具 → 本端跟着清
+             * （同样权威在电脑侧：工具跑完 / run 结束都由那边不再下发这个字段来表达）。
+             */
+            runningTools: { ...s.runningTools, [e.sessionId]: e.runtime.runningTools ?? undefined },
             /*
              * 电脑侧的错误（2026-10 真机反馈：过去这里只取了 working / paused / compacting /
              * toolProgress，`runtime.error` 被静默丢掉 —— 会话报错时手机端一个字都看不到）。

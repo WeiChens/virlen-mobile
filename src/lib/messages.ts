@@ -22,7 +22,7 @@
  * 交汇点，放在组件里就只能靠人眼看 —— 而它的错法全是**静默**的
  * （旧电脑端会给一个点了没效果的「引用」；被省略的工具输出会报「已复制」）。
  */
-import type { MessageDTO } from 'virlen-remote'
+import type { MessageDTO, RunningToolDTO } from 'virlen-remote'
 
 /** 是否有正文可渲染（空白正文一律视为没有）。 */
 export function hasBody(message: Pick<MessageDTO, 'text'>): boolean {
@@ -436,4 +436,60 @@ export function pendingLabel(input: {
     return `正在生成工具调用 ${tp.name}${size}…`
   }
   return input.streaming ? '正在思考…' : 'AI 正在处理…'
+}
+
+/* ─────────────────── 「正在执行」的工具（§27 姊妹） ─────────────────── */
+
+/** 尾部最多列几个正在执行的工具（再多就把剩下的计入「等 N 个」）。 */
+export const RUNNING_TOOLS_MAX = 3
+
+export interface RunningToolsView {
+  /** 要显示的行（最多 `RUNNING_TOOLS_MAX` 条）。 */
+  rows: Array<{ toolCallId: string; label: string }>
+  /**
+   * 没列出来的条数（0 = 全列了）。
+   *
+   * 为何要摆一个数：一批并行调用可能有很多个（模型一次发十几个也不奇怪），全列出来
+   * 会把尾部撑成一屏；但**少列几条却不告知**就是撞着数（用户以为就这几个）。
+   */
+  more: number
+}
+
+/**
+ * 空的视图（模块级常量：返回新对象会让 `useSyncExternalStore` 认定快照一直在变）。
+ *
+ * 导出是因为组件也得拿它当「没在跑」的默认值 —— 两处各自 `{ rows: [], more: 0 }`
+ * 会多出两个引用，下游的依赖比较就跟着多变一次。
+ */
+export const EMPTY_RUNNING_TOOLS: RunningToolsView = { rows: [], more: 0 }
+
+/**
+ * 一行「正在执行 X · 参数」的文案。
+ *
+ * ⚠️ 工具名与入参摘要都是**电脑侧给的**（`RuntimeDTO.runningTools[].name` / `.args`，
+ * 与已完成卡片的 `toolArgs` 同一个 `summarizeToolArgs` 口径）：手机端不重新拼、也不从
+ * 其它字段反推 —— 摘要拿不到时只报工具名（不编一个「无参数」）。
+ */
+export function runningToolLabel(tool: Pick<RunningToolDTO, 'name' | 'args'>): string {
+  const name = tool.name?.trim() ?? ''
+  const args = tool.args?.trim()
+  // 工具名缺席（旧电脑端 / 拿不到）：说一句不撒谎的中性话，不编一个名字
+  if (!name) return '正在执行工具'
+  return args ? `正在执行 ${name} · ${args}` : `正在执行 ${name}`
+}
+
+/**
+ * 「正在执行」的**视图模型**（纯函数；组件只负责摆 HTML）。
+ *
+ * 空 / 缺字段一律返回同一个模块级常量 —— 这是 `useStoreSelector` 那条铁律的同类要求：
+ * 每次渲染新建一个空对象会让下游 `useMemo` / effect 的依赖每次都变。
+ */
+export function runningToolsView(
+  tools: readonly RunningToolDTO[] | undefined,
+): RunningToolsView {
+  if (!tools || tools.length === 0) return EMPTY_RUNNING_TOOLS
+  const rows = tools
+    .slice(0, RUNNING_TOOLS_MAX)
+    .map((tool) => ({ toolCallId: tool.toolCallId, label: runningToolLabel(tool) }))
+  return { rows, more: tools.length - rows.length }
 }

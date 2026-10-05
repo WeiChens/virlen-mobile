@@ -16,6 +16,9 @@ import {
   hasBody,
   isDetailOmitted,
   pendingLabel,
+  RUNNING_TOOLS_MAX,
+  runningToolLabel,
+  runningToolsView,
   systemLabel,
   toolView,
 } from '../lib/messages'
@@ -249,5 +252,37 @@ describe('消息渲染规则', () => {
     expect(pendingLabel({ streaming: true, toolProgress: { name: 'read_file', chars: 0 } })).toBe(
       '正在生成工具调用 read_file…',
     )
+  })
+
+  it('runningToolLabel：说出「正在执行哪个工具 + 关键入参」（§27 姊妹）', () => {
+    // 工具名与摘要都是电脑侧给的（与已完成卡片的 toolArgs 同一口径）—— 本端只拼一句
+    expect(runningToolLabel({ name: 'read_file', args: 'src/store/chat.ts' })).toBe(
+      '正在执行 read_file · src/store/chat.ts',
+    )
+    // 拿不到摘要 → 只说工具名，不编一个「无参数」
+    expect(runningToolLabel({ name: 'execute_command' })).toBe('正在执行 execute_command')
+    expect(runningToolLabel({ name: 'read_file', args: '   ' })).toBe('正在执行 read_file')
+    // 名字也拿不到（旧电脑端）→ 中性话，不造假名字
+    expect(runningToolLabel({ name: '' })).toBe('正在执行工具')
+  })
+
+  it('runningToolsView：最多列 N 行，多出来的报个数（少列几条不能不告知）', () => {
+    // 空 / 缺字段 → 同一个模块级常量（下游依赖比较不会每次都变）
+    expect(runningToolsView(undefined)).toBe(runningToolsView([]))
+    expect(runningToolsView([])).toEqual({ rows: [], more: 0 })
+
+    const one = runningToolsView([{ toolCallId: 'tc1', name: 'read_file', args: 'a.ts' }])
+    expect(one.rows.map((r) => r.toolCallId)).toEqual(['tc1'])
+    expect(one.more).toBe(0)
+
+    const many = runningToolsView(
+      Array.from({ length: RUNNING_TOOLS_MAX + 2 }, (_, i) => ({
+        toolCallId: `tc${i}`,
+        name: 'read_file',
+        args: `f${i}.ts`,
+      })),
+    )
+    expect(many.rows).toHaveLength(RUNNING_TOOLS_MAX)
+    expect(many.more).toBe(2)
   })
 })

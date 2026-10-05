@@ -81,8 +81,10 @@ import { useStoreSelector } from '../../lib/store'
 import { chatStore } from '../../store/chat'
 import {
   dedupeMessages,
+  EMPTY_RUNNING_TOOLS,
   hasBody,
   pendingLabel,
+  runningToolsView,
   systemLabel,
   toolView,
   TOOL_OMITTED_TEXT,
@@ -376,14 +378,19 @@ const ListRowView = memo(function ListRowView({
 })
 
 /**
- * StreamingBubble —— 流式正文 / 等待占位，**全页唯一订阅高频切片的组件**。
+ * StreamingBubble —— 流式正文 / 「正在执行的工具」 / 等待占位，**全页唯一订阅高频切片的组件**。
  *
- * 为什么要单独一个组件（§29）：`streaming` / `toolProgress` 是**每帧都在变**的切片。
- * 留在列表里就要求列表订阅整个 store → 「一个 token」重渲染整页；下沉到这里后，
- * 每帧只重渲染这一个气泡。
+ * 为什么要单独一个组件（§29）：`streaming` / `toolProgress` / `runningTools` 都是**每次变化
+ * 都要落屏**的切片。留在列表里就要求列表订阅整个 store → 「一个 token」重渲染整页；
+ * 下沉到这里后，每帧只重渲染这一个气泡。
  *
  * ⚠️ 跟随回调走 **layout effect**：气泡长高必须在本帧绘制**之前**完成贴底 / 纠偏，
  * 否则会看到「先长高、再跳一下」。列表本身不订阅流式切片，所以这个回调是它唯一的触发点。
+ *
+ * 「正在执行的工具」（§27 姊妹）：电脑侧把「已声明、结果还没到」的调用经 `RuntimeDTO.runningTools`
+ * 推下来（与桌面那张呼吸点卡片同一判据）。它**与正文并存**（模型常常先说一句再调工具），
+ * 所以渲染在正文气泡**下面**，而不是占位那个位置；没有正文、也没有执行中的工具时才退回
+ * 「正在思考…」占位（否则会同时出现两句话，看起来像两个状态在打架）。
  */
 function StreamingBubble({
   sessionId,
@@ -399,37 +406,62 @@ function StreamingBubble({
 }) {
   const streaming = useStoreSelector(chatStore, (s) => s.streaming[sessionId])
   const toolProgress = useStoreSelector(chatStore, (s) => s.toolProgress[sessionId])
+  const runningTools = useStoreSelector(chatStore, (s) => s.runningTools[sessionId])
   const seq = streaming?.seq
+  /*
+   * 没在跑（或已暂停）时一律不显示执行中的工具：暂停意味着 run 停在原地（那些没结果的调用
+   * 是「等继续」而不是「正在执行」），而空闲时它们只是历史遗留（电脑侧也不会再下发）。
+   */
+  const running = working && !paused ? runningToolsView(runningTools) : EMPTY_RUNNING_TOOLS
+  /** 尾部的**形状指纹**：多一行 / 少一行都要重新贴底（行数变了高度就变了）。 */
+  const runningSig = `${running.rows.length}#${running.more}`
 
   useLayoutEffect(() => {
     onGrow()
-  }, [seq, onGrow])
+  }, [seq, runningSig, onGrow])
 
-  if (streaming && hasBody(streaming)) {
-    // 流式正文：电脑侧按本端声明推**增量帧**，已在 store 里拼成完整正文（§32）
-    return (
-      <div className="msg msg--assistant">
-        <div className="msg__bubble msg__bubble--stream">
-          <Markdown content={streaming.text} streaming />
-          <span className="caret" />
-        </div>
-      </div>
-    )
-  }
-
-  // 还没有正文（思考中 / 工具执行中）：给一个明确的「在动」的占位，而不是空白
-  if (!working || paused) return null
+  const body = !!streaming && hasBody(streaming)
   return (
-    <div className="msg msg--assistant">
-      <div className="msg__bubble msg__bubble--pending">
-        <span className="dots" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </span>
-        {pendingLabel({ streaming: !!streaming, toolProgress })}
-      </div>
-    </div>
+    <>
+      {body && streaming && (
+        <div className="msg msg--assistant">
+          <div className="msg__bubble msg__bubble--stream">
+            <Markdown content={streaming.text} streaming />
+            <span className="caret" />
+          </div>
+        </div>
+      )}
+      {running.rows.length > 0 && (
+        <div className="msg msg--assistant">
+          <div className="running-tools">
+            {running.rows.map((row) => (
+              <div className="running-tool" key={row.toolCallId}>
+                <span className="running-tool__dot" aria-hidden="true" />
+                <span className="running-tool__label" title={row.label}>
+                  {row.label}
+                </span>
+              </div>
+            ))}
+            {running.more > 0 && (
+              <div className="running-tools__more">等 {running.rows.length + running.more} 个工具</div>
+            )}
+          </div>
+        </div>
+      )}
+      {/* 还没有正文、也没有在跑的工具（思考中）：给一个明确的「在动」的占位，而不是空白 */}
+      {!body && running.rows.length === 0 && working && !paused && (
+        <div className="msg msg--assistant">
+          <div className="msg__bubble msg__bubble--pending">
+            <span className="dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            {pendingLabel({ streaming: !!streaming, toolProgress })}
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

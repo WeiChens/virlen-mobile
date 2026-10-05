@@ -85,6 +85,17 @@ if (root) {
       <button id="ctx-low" type="button">占用 10%</button>
       <button id="ctx-high" type="button">占用 75%</button>
     </div>
+    <h2>工具的两个阶段（验证手机端尾部）</h2>
+    <p class="muted">
+      「参数累积中」→ 手机尾部应显示「正在生成工具调用 write_file · 1.2k 字符…」；
+      「开始执行」→ 应换成「正在执行 write_file · src/store/chat.ts」这样的行（工具名 + 入参摘要）；
+      「执行完毕」→ 那些行消失。两者是**先后相接**的两段：参数生成完、工具开跑那一刻就换口味。
+    </p>
+    <div class="row">
+      <button id="tool-args" type="button">参数累积中</button>
+      <button id="tool-run" type="button">开始执行</button>
+      <button id="tool-done" type="button">执行完毕</button>
+    </div>
     <h2>事件日志</h2>
     <pre id="log"></pre>
   `
@@ -305,6 +316,29 @@ document.getElementById('ctx-low')?.addEventListener('click', () => {
 document.getElementById('ctx-high')?.addEventListener('click', () => {
   hostSource?.bumpContext('demo-1', 150_000)
   log('上下文占用 → 75%（150k / 200k）→ 手机端可出现「压缩上下文」')
+})
+
+/*
+ * 工具的两个阶段（§27 与它的姊妹字段）——手推给手机，验证尾部那几行。
+ *
+ * ⚠️ 真实电脑侧没有这两个「手动口」：参数累积进度由引擎的 `tool_progress` 事件驱动，
+ * 「正在执行」由 `store-bridge` 从会话消息推导（assistant 的 `toolCalls[]` 减去已有结果）。
+ * 这里只是让**没有引擎**的演示宿主能把这两帧发出来。
+ */
+document.getElementById('tool-args')?.addEventListener('click', () => {
+  hostSource?.setToolProgress('demo-1', { name: 'write_file', chars: 1200 })
+  log('参数累积中：write_file · 1200 字符')
+})
+document.getElementById('tool-run')?.addEventListener('click', () => {
+  hostSource?.setRunningTools('demo-1', [
+    { toolCallId: 'tc-demo-1', name: 'write_file', args: 'src/store/chat.ts · 写入 42 行' },
+    { toolCallId: 'tc-demo-2', name: 'execute_command', args: 'pnpm vitest run' },
+  ])
+  log('工具开始执行：write_file / execute_command')
+})
+document.getElementById('tool-done')?.addEventListener('click', () => {
+  hostSource?.setRunningTools('demo-1', null)
+  log('工具执行完毕（尾部那几行应消失、会话回到空闲）')
 })
 
 void start()

@@ -396,6 +396,58 @@
   font-size: calc(13px * var(--fs));
   border: 1px dashed var(--border-2);
 }
+/*
+ * 「正在执行」的工具（§27 姊妹）。
+ *
+ * 为何与正文气泡**并列**而不是替代它：模型常常先说一句（流式正文）再调工具，电脑上也是
+ * 「上面是那句话、下面是几张工具卡片」——手机看到同一件事、同一个次序才不困惑。
+ *
+ * 为何每行一个圆点而不是复用 `.dots`（三个跳动点）：那个点是「在等待」的意思，而这里
+ * 每行都是**一个具体的动作**；一行一个呼吸点与桌面的 pending 卡片同一套视觉语言。
+ *
+ * 长参数一律单行省略号（`min-width: 0` + `text-overflow`）：工具行是**一行的记账单位**，
+ * 让它换行会把尾部撑成一屏（想看完整入参得等工具跑完、展开那张卡片）。
+ */
+.running-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px dashed var(--border-2);
+  border-radius: 12px;
+  background: var(--bg-bubble);
+  color: var(--fg-muted);
+  font-size: calc(12.5px * var(--fs));
+}
+.running-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.running-tool__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+.running-tool__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.running-tools__more {
+  opacity: 0.75;
+}
+@keyframes dot-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
 .dots {
   display: inline-flex;
   gap: 3px;
@@ -641,11 +693,12 @@
  * 名字过长时又能靠 `min-width: 0` 收缩出省略号。
  */
 .tool-card__name {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
+  /* flex: 0 1 auto; */
+  width: fit-content;
+  /* min-width: 0; */
+  /* overflow: hidden; */
   white-space: nowrap;
-  text-overflow: ellipsis;
+  /* text-overflow: ellipsis; */
   background: var(--bg-inline);
   border-radius: 6px;
   padding: 1px 6px;

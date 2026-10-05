@@ -94,7 +94,8 @@
   border: 1px solid var(--border-3);
   background: var(--bg-bubble);
   color: var(--fg-3);
-  border-radius: 999px;
+  border-radius: 5px;
+  text-align: left;
   padding: 6px 12px;
   font-size: calc(13px * var(--fs));
 }
