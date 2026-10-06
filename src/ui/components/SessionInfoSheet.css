@@ -33,6 +33,9 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px 8px;
+  /* 面板内浮层的定位父级（文件面板的「正在读取目录…」挂在 `top: 100%`）：
+     标题栏不参与滚动，所以那个提示永远可见，而且不占 body 的高度 */
+  position: relative;
 }
 .sheet__title {
   font-size: calc(15px * var(--fs));

@@ -1,8 +1,9 @@
 /**
  * 界面偏好（主题 / 界面大小）—— **纯函数 + 存储口径**，可单测（§21.4）。
  *
- * 两个偏好都只有「三选一」，因此存的是**枚举**而不是布尔：布尔迟早要加上第三个值
- * （主题就有第三个：「跟随系统」），那时存量的 `true/false` 就得做迁移 —— 一次说清更省事。
+ * 两个偏好都是**有限枚举**（主题三选一、界面大小五档），因此存的是枚举而不是布尔：
+ * 布尔迟早要加上第三个值（主题就有第三个：「跟随系统」），那时存量的 `true/false` 就得做迁移
+ * —— 一次说清更省事（后来「小 / 中 / 大」变五档也印证了这一点：多两个取值，存储格式一字不用改）。
  *
  * ⚠️ 与 `theme.css` 的**两份约定**（改一处必须改另一处）：
  * - `SIZE_PREF` 的取值 = `:root[data-size='…']` 的属性值；
@@ -13,8 +14,19 @@
 
 /** 用户选的主题：跟随系统 / 强制浅色 / 强制深色。 */
 export type ThemePref = 'system' | 'light' | 'dark'
-/** 界面大小三档（对应 `:root[data-size]`）。 */
-export type SizePref = 's' | 'm' | 'l'
+/**
+ * 界面大小五档（对应 `:root[data-size]`），取值方向即 `SIZE_PREFS` 的顺序（从小到大）。
+ *
+ * 为何是五档而不是三档：真机反馈「还想再小一点」—— 旧「小」（0.92）在长命令 / 长表格面前仍偏大，
+ * 而字号不能靠浏览器缩放去绕（那会把 `position: fixed` 的抽屉 / 底部面板一起缩，版式就跑偏了）。
+ * 所以往**小**的一侧多给一档（特小 0.80），往大的一侧也多给一档（特大 1.26）。
+ *
+ * ⚠️ **中档恒为 1**：它既是现有用户的默认值（`DEFAULT_PREFS`），也是「不大不小」的基准 ——
+ * 其余四档围绕它取值。同理 `'s'` / `'m'` / `'l'` 三个取值**沿用旧名**，于是存储里已有的
+ * `{"size":"l"}` 不需要任何迁移就能继续生效（伪迁移是这类改动最容易出的事故：
+ * 一个字面量改错，所有老用户的分档集体回落默认）。
+ */
+export type SizePref = 'xs' | 's' | 'm' | 'l' | 'xl'
 /** 实际生效的主题（`system` 解析之后的结果），对应 `:root[data-theme]`。 */
 export type ResolvedTheme = 'light' | 'dark'
 
@@ -32,14 +44,15 @@ export interface UiPrefs {
 export const DEFAULT_PREFS: UiPrefs = { theme: 'system', size: 'm' }
 
 export const THEME_PREFS: readonly ThemePref[] = ['system', 'light', 'dark']
-export const SIZE_PREFS: readonly SizePref[] = ['s', 'm', 'l']
+/** 五档（顺序 = 设置面板里的顺序 = 字号由小到大）。 */
+export const SIZE_PREFS: readonly SizePref[] = ['xs', 's', 'm', 'l', 'xl']
 
 export function isThemePref(value: unknown): value is ThemePref {
   return value === 'system' || value === 'light' || value === 'dark'
 }
 
 export function isSizePref(value: unknown): value is SizePref {
-  return value === 's' || value === 'm' || value === 'l'
+  return value === 'xs' || value === 's' || value === 'm' || value === 'l' || value === 'xl'
 }
 
 /**

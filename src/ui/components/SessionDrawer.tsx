@@ -7,6 +7,11 @@
  *
  * 抽屉只做「挑一个会话」这一件事：重命名 / 置顶 / 删除 / 模型 / 上下文都在会话信息面板里
  * （`SessionInfoSheet`）——手机屏幕上把两类操作混在一层，误触代价太大。
+ *
+ * 底栏例外地装了两个**全局**动作：设置（主题 / 界面大小）与断开连接。它们与「挑会话」确实
+ * 不是一回事，但它们也不属于**任何**一个会话 —— 而会话信息面板是「对当前会话动手」的地方
+ * （新对话状态下它甚至不存在）。设置此前占着顶栏一个 38px 图标，五个图标会把标题挤没
+ * （见 `Chat.tsx` 文件头那条纪律），故下沉到这里：与会话列表同层、且总能到达。
  */
 import { useState } from 'react'
 import type { SessionSummaryDTO } from 'virlen-remote'
@@ -28,9 +33,17 @@ import './SessionDrawer.css'
 interface Props {
   open: boolean
   onClose: () => void
+  /**
+   * 打开设置（主题 / 界面大小）。
+   *
+   * 由调用方（`Chat.tsx`）持有那两个浮层的状态：本组件只负责「在底栏给一个人人都能
+   * 碰到的入口」，自己不去 import 面板 —— 否则抽屉得知道「关掉自己」与「开另一个浮层」
+   * 的先后顺序，那件事属于页面。**必传**：不传 = 设置在这条路径上不可达（只剩登录页有）。
+   */
+  onOpenSettings: () => void
 }
 
-export default function SessionDrawer({ open, onClose }: Props) {
+export default function SessionDrawer({ open, onClose, onOpenSettings }: Props) {
   const chat = useStore(chatStore)
   const conn = useStore(connectionStore)
   // 分组方式持久化（PWA 重开后保持选择）
@@ -168,12 +181,29 @@ export default function SessionDrawer({ open, onClose }: Props) {
           })}
         </div>
 
-        {/* 断开连接总能到达（新对话状态下没有会话信息面板） */}
+        {/*
+          底栏：设备名 + 「设置」+ 「断开」。
+
+          断开连接总能到达（新对话状态下没有会话信息面板）；设置同理。
+          先 `onClose()` 再开面板：两个浮层叠在一起的话，返回时要按两次返回键。
+        */}
         <footer className="drawer__foot">
           <span className="drawer__device">{conn.device?.name ?? '未知设备'}</span>
-          <button type="button" className="btn btn--small btn--ghost" onClick={disconnect}>
-            断开
-          </button>
+          <div className="drawer__foot-actions">
+            <button
+              type="button"
+              className="btn btn--small btn--ghost"
+              onClick={() => {
+                onClose()
+                onOpenSettings()
+              }}
+            >
+              设置
+            </button>
+            <button type="button" className="btn btn--small btn--ghost" onClick={disconnect}>
+              断开
+            </button>
+          </div>
         </footer>
       </aside>
     </>

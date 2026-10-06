@@ -31,6 +31,15 @@ const HOST_ID = params.get('host') ?? 'virlen-demo-host'
 const HOST_NAME = 'Virlen 电脑（演示）'
 const SIGNAL_BASE = params.get('signal') ?? 'https://virlen.cn/api/rtc/'
 const ROOM = params.get('room') ?? HOST_ID
+/**
+ * 模拟链路通讯类型（§37 的非中继门槛）—— `?files=relay` 让所有文件 RPC 一律拒。
+ *
+ * 为何不做一个「切链路类型」的按钮：换数据源会连带丢掉演示文件树与会话订阅状态，
+ * 而那个状态在联调过程中是有价值的（传到一半的进度、刚上传的文件）。用 URL 参数开口，
+ * 刷新一次页面就到手 —— 想要的状态从头开始。（真实的中继判定在 `LinkKindWatcher`，
+ * 这里只是让模拟宿主按同一句口径拒。）
+ */
+const FILE_LINK: 'direct' | 'relay' = params.get('files') === 'relay' ? 'relay' : 'direct'
 
 /*
  * ICE 默认值来自信令服务（`GET <SIGNAL_BASE>ice`）—— 本文件里没有任何 TURN 凭证（§31）。
@@ -77,7 +86,9 @@ if (root) {
     </div>
     <h2>上下文占用（验证手机端信息面板）</h2>
     <p class="muted">
-      「占用 75%」后手机端会话信息面板才会出现「压缩上下文」（与桌面 token 环同判据：低于 40% 不给压）。
+      「占用 75%」后手机端会话信息面板才会出现压缩按钮（与桌面 token 环同判据：低于 40% 不给压）。
+      面板里是**两个**入口：「AI 摘要压缩」与「正文压缩」—— 演示宿主按 <code>mode</code> 出不同产物
+      （后者那句会写「正文压缩」），选了哪种一看摘要气泡就知道。
       压缩后 mock 会把消息换成一条摘要 + 推 messages.reset，手机端应自动重拉。
       摘要气泡**默认折叠**（只留标签 + 开头），点一下展开全文、再点收回。
     </p>
@@ -95,6 +106,33 @@ if (root) {
       <button id="tool-args" type="button">参数累积中</button>
       <button id="tool-run" type="button">开始执行</button>
       <button id="tool-done" type="button">执行完毕</button>
+    </div>
+    <h2>工作目录文件（§37）</h2>
+    <p class="muted">
+      手机端入口在会话信息面板的「工作目录」那一行：<b>浏览文件</b>（顶栏已收敛到三个图标，
+      不再放文件图标）。
+      演示目录里真的有一棵树（<code>src/</code>、<code>docs/</code>）、一张真 PNG 可预览、
+      <code>build/app.bin</code> 是未知类型（只能下载）；上传落到同一棵树上，用
+      「同名再传一次」可看到电脑侧自动改名「- 副本」。
+    </p>
+    <p class="muted">
+      打开一个<b>文本 / 代码</b>文件后，预览头部有 <b>编辑</b>：改完保存是<b>原地覆写</b>
+      （同路径、不产生「- 副本」），回执会带新的版本号。演示宿主也真的按三条纪律拒：
+      目标必须存在、只收可编辑扩展名、编辑上限 256KB。
+      想手工验「冲突」那条路：在手机上进编辑区 → 在电脑上用别的编辑器改同一个文件（或在本页
+      的连接里用别的客户端写它）→ 回到手机上点保存，应当看到「已经变了」+ 重新载入 / 强制覆盖。
+    </p>
+    <p class="muted">
+      预览头部还有一个 <b>引用</b>：把这份文件挂到<b>待发的那条消息</b>上（只带路径，不搬运内容 ——
+      内容由 AI 用 <code>read_file</code> 按需读）。点一下变「已引用」，再点一下取消；
+      <b>面板不会自动关</b>（可以接着引用下一个），关掉面板后能在输入区看到 chip。
+      验收点：发出去之后，电脑端那条用户消息的正文里<b>不会</b>出现 <code>[文件] …</code>，
+      且桌面气泡上会显示一个真正的文件 chip（参数走结构化 <code>files</code>，不是拼出来的文本）。
+      想验降级：把本页 hello 应答里的 <code>message.file</code> 去掉 → 手机端的「引用」按钮应当
+      直接不出现（而不是点了没反应 —— 旧电脑端会把 <code>files</code> 静默丢掉）。
+    </p>
+    <div class="row">
+      <span class="muted">非中继门槛：以 <code>?files=relay</code> 打开本页 → 所有文件操作一律拒（手机端应整面板显示同一句理由）</span>
     </div>
     <h2>事件日志</h2>
     <pre id="log"></pre>
@@ -146,6 +184,8 @@ async function start(): Promise<void> {
     streamSteps: 3,
     streamDelayMs: 60,
     demoToolMessage: true,
+    // §37：模拟链路类型（`?files=relay` = 手机端应当被拒并说明原因）
+    fileLinkKind: FILE_LINK,
   })
   hostSource = source
 

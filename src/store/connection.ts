@@ -13,11 +13,17 @@
  */
 import {
   BridgeError,
+  COMPRESS_MODE_CAPABILITY,
   Endpoint,
+  FILE_BROWSE_CAPABILITY,
+  FILE_DOWNLOAD_CAPABILITY,
+  FILE_EDIT_CAPABILITY,
+  FILE_UPLOAD_CAPABILITY,
   SESSION_AGENT_CAPABILITY,
   createCaller,
   MESSAGE_DELETE_CAPABILITY,
   MESSAGE_DETAIL_CAPABILITY,
+  MESSAGE_FILE_CAPABILITY,
   MESSAGE_QUOTE_CAPABILITY,
   type HelloResult,
   type HostApi,
@@ -183,6 +189,13 @@ const CLIENT_CAPABILITIES = [
   'session.workspace',
   'session.context',
   'session.compress',
+  /**
+   * §22：本端会给用户两种压缩方式的选择（AI 摘要 / 正文压缩），并把选择放进 `CompressParams.mode`。
+   *
+   * ⚠️ 声明不等于能用：显隐看**电脑端 hello 应答里有没有同一个名字** —— 旧电脑端不认 `mode`，
+   * 会静默丢掉它并按电脑侧设置里的方式压缩，所以本端在那种情况下只给一个「压缩上下文」按钮。
+   */
+  COMPRESS_MODE_CAPABILITY,
   // 新建会话时可选定 Agent（协议 0.6.0）；旧电脑端没这个能力名 → 手机端不显示选择器
   SESSION_AGENT_CAPABILITY,
   'interaction.answer',
@@ -206,6 +219,26 @@ const CLIENT_CAPABILITIES = [
    */
   MESSAGE_QUOTE_CAPABILITY,
   MESSAGE_DELETE_CAPABILITY,
+  /**
+   * §37：本端支持「电脑上的文件」（浏览 / 预览 / 下载 / 上传 / **编辑**）。
+   *
+   * 四个能力名都声明：看过目录才知道能不能下、能下才谈得上上传与改写 —— 它们是一组。
+   * ⚠️ 声明不等于能用：真正的显隐看**电脑端 hello 应答里有没有同一批名字**
+   * （旧电脑端没有 `host.file.*` 方法，也没有 `file.edit`），另有一道非中继门槛
+   * （见 `fileStore.blockReason`）。
+   */
+  FILE_BROWSE_CAPABILITY,
+  FILE_DOWNLOAD_CAPABILITY,
+  FILE_UPLOAD_CAPABILITY,
+  FILE_EDIT_CAPABILITY,
+  /**
+   * §37：本端能把电脑上的文件**引用到对话**（发 `SendParams.files`、渲染 `MessageDTO.files`）。
+   *
+   * ⚠️ 与上面四档分开声明：文件引用走的不是 `host.file.*` 而是 `session.send` 的一个参数，
+   * 电脑端认不认它看的是**另一个能力名**（`message.file`）。旧电脑端会静默丢掉 `files` ——
+   * 所以「引用」入口由**电脑端声明**决定（本端声明只是告诉电脑侧「我是新客户端」）。
+   */
+  MESSAGE_FILE_CAPABILITY,
 ]
 
 interface ActiveConnection {

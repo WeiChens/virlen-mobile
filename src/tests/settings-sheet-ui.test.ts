@@ -36,7 +36,7 @@ function click(el: Element): void {
   })
 }
 
-/** 按文案找按钮（面板里就是三段 / 三段，用文案比下标稳）。 */
+/** 按文案找按钮（主题三段 / 大小五段，用文案比下标稳）。 */
 function button(label: string): HTMLButtonElement {
   const found = [...(container?.querySelectorAll('button') ?? [])].find(
     (b) => b.textContent?.trim() === label,
@@ -83,7 +83,7 @@ describe('设置面板', () => {
     expect(isPressed('深色')).toBe(true)
   })
 
-  it('界面大小：点「大」写进 data-size，并落存储', () => {
+  it('界面大小：五档都能点，写进 data-size 并落存储', () => {
     mount()
     expect(isPressed('中')).toBe(true)
 
@@ -91,8 +91,22 @@ describe('设置面板', () => {
     expect(document.documentElement.dataset.size).toBe('l')
     expect(parsePrefs(localStorage.getItem(STORAGE_KEY)).size).toBe('l')
 
+    // 新增的两档（更小 / 更大）都要真的能到 DOM —— 只有面板上多一个字不算实现
+    click(button('特小'))
+    expect(document.documentElement.dataset.size).toBe('xs')
+    click(button('特大'))
+    expect(document.documentElement.dataset.size).toBe('xl')
+
     click(button('小'))
     expect(document.documentElement.dataset.size).toBe('s')
+  })
+
+  it('界面大小就是那五档（少一档 / 多一档都算做了一半）', () => {
+    mount()
+    const labels = [...container!.querySelectorAll('.settings__seg-item[data-opt]')].map((el) =>
+      el.textContent?.trim(),
+    )
+    expect(labels).toEqual(['特小', '小', '中', '大', '特大'])
   })
 
   it('显示本机名称（就是配对时报给电脑的那个名字）', () => {

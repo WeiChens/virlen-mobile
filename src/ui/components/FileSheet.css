@@ -1,0 +1,433 @@
+/* FileSheet —— 「电脑上的文件」面板（§37）。
+   外壳复用 `.sheet*`（见 SessionInfoSheet.css）：手机上「从底部升起的一层」只有一种形态。
+   这里只写文件行 / 面包屑 / 预览 / 进度这几块**本面板独有**的东西。 */
+
+/* 面板高一点（列表要能显示十来行；84vh 之上还有 Home Indicator 的安全区） */
+.files {
+  max-height: 88vh;
+}
+
+/* ── 两道门槛（链路是中继 / 电脑端未授权）── */
+.files__blocked {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--fg-2);
+  font-size: calc(13px * var(--fs));
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* ── 面包屑 ── */
+.files__crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  overflow-x: auto;
+  /* 横向滚动条在手机上不显示，但需要能滑（长路径尤其常见） */
+  scrollbar-width: none;
+  /* ⚠️ 必须显式声明不被压缩（真机反馈：「条目一多，面包屑被挤上去只剩一点点」）。
+     它写了 `overflow-x: auto` —— 这会让 `overflow-y` 也变成 auto，于是它是一个**滚动容器**，
+     而滚动容器的**自动最小高度是 0**。`.sheet__body` 是个 flex 列：内容超出时先压缩子项，
+     其它子项 overflow 可见（最小高度 = 内容高度，压不动），收缩量就几乎全落到它头上，
+     被压成一条缝。
+     一句话：**flex 列里凡自带滚动的子项，都要自己声明不被压缩**。 */
+  flex: none;
+  /* 常驻面板顶部：滚长列表时它一直在（否则想回上一级，得先滚回顶部）。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* sticky 的代价：必须自己铺一层不透明背景（与 `.sheet` 同色 —— 改底色时要一起改），
+     否则列表行会从它背后透出来，「叠字」。 */
+  background: var(--bg-raised);
+  /* 14px − 12px = 原来的「2px 内边距 + 12px flex 间距」：多出来的 14px 正好盖住滚过去的行，
+     负外边距再把 flex 的 12px 间距抵消 —— 视觉间距与改前完全一致。 */
+  padding: 0 0 14px;
+  margin-bottom: -12px;
+}
+.files__crumbs::-webkit-scrollbar {
+  display: none;
+}
+.files__crumb-item {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.files__crumb {
+  border: none;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: calc(12px * var(--fs));
+  padding: 4px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* 当前级：不是链接，是「你在这里」—— 置灰且不可点 */
+.files__crumb.is-current {
+  color: var(--fg-2);
+  font-weight: 600;
+  cursor: default;
+}
+.files__crumb:disabled {
+  opacity: 0.75;
+}
+.files__crumb-sep {
+  color: var(--fg-faint);
+  font-size: calc(12px * var(--fs));
+}
+
+/* ── 「正在读取目录…」胶囊（挂在标题栏下）── */
+/* 绝对定位、定位父级是 `.sheet__head`（见 SessionInfoSheet.css）：
+   ① **不占高度** —— 进目录时列表留在原地（见 FileSheet.tsx），这条提示不能再去顶高度，
+      否则面板还是要「动一下」；
+   ② **不随内容滚** —— 挂在列表里的话，用户滚到下面点目录时就看不到它了。
+   代价：它会短暂盖住面包屑 —— 但加载中面包屑本来就是旧路径，它一消失正好露出新的。 */
+.files__loading {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--fg-2);
+  font-size: calc(12px * var(--fs));
+  box-shadow: 0 4px 12px var(--shadow);
+  /* 纯提示：不抢列表的点击（它本来就压在列表上方） */
+  pointer-events: none;
+}
+
+/* ── 目录列表 ── */
+.files__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.files__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: calc(40px * var(--fs));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--fg);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: calc(13px * var(--fs));
+  text-align: left;
+  cursor: pointer;
+}
+.files__row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.files__row-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.files__row-name {
+  flex: 1;
+  min-width: 0;
+  /* 长文件名截断（列表不该被一个超长名字撑成横向滚动） */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files__row-size {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: calc(11px * var(--fs));
+}
+
+/* ── 提示 / 报错 ── */
+.files__hint {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-faint);
+  font-size: calc(12px * var(--fs));
+  line-height: 1.5;
+}
+.files__notice {
+  margin: 0;
+  color: var(--accent-text);
+  font-size: calc(12px * var(--fs));
+  line-height: 1.5;
+  word-break: break-word;
+}
+.files__error {
+  margin: 0;
+  color: var(--danger-strong);
+  font-size: calc(12px * var(--fs));
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ── 预览 ── */
+.files__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.files__preview-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.files__back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(28px * var(--fs));
+  height: calc(28px * var(--fs));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.files__preview-name {
+  flex: 1;
+  min-width: 0;
+  font-size: calc(13px * var(--fs));
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files__preview-size {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: calc(11px * var(--fs));
+}
+/* 图片：限高 + 保持比例（手机上一张 4K 截图不该把面板撑出屏幕） */
+.files__image {
+  display: block;
+  max-width: 100%;
+  max-height: 46vh;
+  margin: 0 auto;
+  border-radius: 10px;
+  background: var(--bg-card);
+  object-fit: contain;
+}
+/* 文本：等宽 + 横向可滚（代码不能自动折行，折了缩进就看不出来了） */
+.files__text {
+  margin: 0;
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: calc(11.5px * var(--fs));
+  line-height: 1.55;
+  color: var(--fg-2);
+  white-space: pre;
+  overscroll-behavior: contain;
+}
+.files__md {
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 10px;
+  overscroll-behavior: contain;
+}
+
+/* ── 编辑区（第三层视图：目录 / 预览 / 编辑）── */
+.files__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.files__editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.files__editor-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(13px * var(--fs));
+  font-weight: 600;
+}
+/* 「未改动 / 有未保存的改动」：改动标记必须随时看得见（手机上误关面板很常见） */
+.files__editor-state {
+  flex: none;
+  color: var(--fg-faint);
+  font-size: calc(11.5px * var(--fs));
+}
+.files__editor-text {
+  /* 高度**定死**（不是 max-height）：手机上没有可拖拽的编辑区，一个能自己滚的固定框
+     才是好用的形态；高 46vh 保证键盘弹起来之后还看得见几行。 */
+  height: 46vh;
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--fg);
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: calc(11.5px * var(--fs));
+  line-height: 1.55;
+  /* 代码不能自动折行（折了缩进就看不出来），横向自己滚 */
+  white-space: pre;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* 预览头部右侧的「编辑」入口（可编辑 且 电脑端认 file.edit 时才出现） */
+.files__edit {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--accent-text);
+  font: inherit;
+  font-size: calc(12px * var(--fs));
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.files__edit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/*
+ * 预览头部右侧的「引用」入口（电脑端认 `message.file` 时才出现）。
+ *
+ * 与「编辑」同一套形状（两者都是对该文件的动作），但**选中态**另有一套颜色：
+ * 「已引用」是一个会持续存在的状态（用户回头要能一眼看出这个已经挑过了），
+ * 而「编辑」只是一次入口。
+ */
+.files__ref {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--accent-text);
+  font: inherit;
+  font-size: calc(12px * var(--fs));
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.files__ref svg {
+  width: calc(14px * var(--fs));
+  height: calc(14px * var(--fs));
+}
+.files__ref.is-on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.files__ref:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/*
+ * 冲突提示：**不是报错**，而是一个要用户做选择的状态 —— 所以样式上也不是一行红字
+ * （那会被当成「保存失败了，再点一次试试」），而是一块带两个按钮的卡片。
+ */
+.files__conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--danger-border-2);
+  border-radius: 10px;
+  background: var(--danger-bg);
+  padding: 10px;
+}
+.files__conflict-text {
+  margin: 0;
+  color: var(--fg);
+  font-size: calc(12px * var(--fs));
+  line-height: 1.5;
+  word-break: break-word;
+}
+.files__conflict-actions {
+  display: flex;
+  gap: 8px;
+}
+.files__conflict-actions .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+/* ── 底部：进度 + 动作 ── */
+.files__foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px calc(10px + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+}
+.files__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.files__progress-text {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: calc(11.5px * var(--fs));
+  color: var(--fg-2);
+}
+.files__progress-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files__progress-num {
+  flex: none;
+  color: var(--fg-faint);
+}
+.files__actions {
+  display: flex;
+  gap: 8px;
+}
+.files__actions .btn {
+  flex: 1;
+  justify-content: center;
+}
+/* 上传入口是 `<label>` 包着一个隐藏 input：禁用态要长得像按钮的禁用态 */
+.files__actions .btn.is-disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.files__file-input {
+  display: none;
+}

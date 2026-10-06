@@ -187,3 +187,77 @@ export function IconChevronDown(props: SVGProps<SVGSVGElement>) {
     </Svg>
   )
 }
+
+/* ── 文件面板（§37）─────────────────────────────────────────────── */
+
+/** 返回上一级 / 退出预览。 */
+export function IconBack(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M15 5l-7 7 7 7" />
+    </Svg>
+  )
+}
+
+/** 下载（从电脑存到手机）。 */
+export function IconDownload(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M12 4v11" />
+      <path d="M7.5 10.5L12 15l4.5-4.5" />
+      <path d="M4.5 19.5h15" />
+    </Svg>
+  )
+}
+
+/** 上传（从手机存到电脑）。 */
+export function IconUpload(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M12 16V5" />
+      <path d="M7.5 9.5L12 5l4.5 4.5" />
+      <path d="M4.5 19.5h15" />
+    </Svg>
+  )
+}
+
+/** 编辑（改电脑上那份文本 / 代码文件）。 */
+export function IconEdit(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M5 19l3.8-.9 9-9a2.2 2.2 0 0 0-3.1-3.1l-9 9L5 19z" />
+      <path d="M13.6 7.6l2.8 2.8" />
+    </Svg>
+  )
+}
+
+/** 图片文件（文件类型图标）。 */
+export function IconImage(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.5" />
+      <path d="M4.5 17l4.5-4.5 3.5 3.5 3-2.5 4 3.5" />
+    </Svg>
+  )
+}
+
+/** 代码文件（文件类型图标）。 */
+export function IconCode(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M9 8l-4 4 4 4" />
+      <path d="M15 8l4 4-4 4" />
+    </Svg>
+  )
+}
+
+/** 普通文件（文件类型图标）。 */
+export function IconFile(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z" />
+      <path d="M14 3.5V8.5h5" />
+    </Svg>
+  )
+}

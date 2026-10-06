@@ -56,10 +56,14 @@ const GROUP_PREFIX = 'tools:'
  *
  * §36 起还要看**引用条**：带引用的消息即使正文为空（只引用不写话）也看得见东西，
  * 当成「渲染不出东西」直接丢掉的话，用户会发现自己那条引用凭空消失了。
+ * §37 的**文件引用**同理：只附文件不写话也是完全正常的一条消息（“看看这些文件”）。
  */
-export function rendersNothing(message: Pick<MessageDTO, 'role' | 'text' | 'quotes'>): boolean {
+export function rendersNothing(
+  message: Pick<MessageDTO, 'role' | 'text' | 'quotes' | 'files'>,
+): boolean {
   if (message.role === 'tool' || message.role === 'system') return false
   if ((message.quotes?.length ?? 0) > 0) return false
+  if ((message.files?.length ?? 0) > 0) return false
   return !hasBody(message)
 }
 

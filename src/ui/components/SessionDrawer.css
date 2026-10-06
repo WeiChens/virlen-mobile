@@ -89,6 +89,13 @@
   justify-content: center;
   gap: 6px;
 }
+/*
+  底栏：设备名（可省略）+ 两个全局动作。
+
+  `space-between` 配三个子项时，中项会被推到中间 —— 所以两个按钮必须先自己成一组
+  （`.drawer__foot-actions`），否则「设备名 / 设置 / 断开」会均匀撒开。
+  设备名因此必须是那个能收缩的（`flex: 1` + `min-width: 0`），否则长名字会把按钮顶出屏幕。
+*/
 .drawer__foot {
   display: flex;
   align-items: center;
@@ -97,7 +104,14 @@
   padding: 8px calc(12px + var(--safe-right)) calc(8px + var(--safe-bottom)) 12px;
   border-top: 1px solid var(--line);
 }
+.drawer__foot-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
 .drawer__device {
+  flex: 1;
+  min-width: 0;
   font-size: calc(12px * var(--fs));
   color: var(--fg-dim);
   overflow: hidden;

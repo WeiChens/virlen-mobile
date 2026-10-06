@@ -3,8 +3,14 @@
  *
  * 布局（自上而下）：
  * 1. **顶栏**：设备名 + 状态（在线 / 工作中 / 压缩中 / 已暂停）、会话标题与模型 / 上下文摘要
- *    （点标题区 = 打开会话信息面板），右上角四个 iconbtn：通讯信号（点开通讯状态面板）、
- *    新建对话、会话列表抽屉、设置（主题 / 界面大小）；
+ *    （点标题区 = 打开会话信息面板），右上角**三个** iconbtn：通讯信号（点开通讯状态面板）、
+ *    新建对话、会话列表抽屉。
+ *
+ *    ⚠️ **顶栏图标只放三个**（2026-10 收敛，教训见 `Chat.css` 的 `.chat__head-actions`）：
+ *    每个图标 38px，五个就是 206px —— 360px 的屏上左侧标题只剩 ~100px，看着就像被按钮压住。
+ *    低频的两个各自下沉到「它本来就属于的地方」：
+ *      - **设置**（主题 / 界面大小）→ 会话抽屉底栏（与会话列表同层：都是与当前会话无关的全局动作）；
+ *      - **电脑上的文件** → 会话信息面板「工作目录」那一行（从目录进去看文件才是直觉）。
  * 2. 链路横幅 / **会话错误横幅** / 暂停横幅 / 待应答卡片 / 一次性提示；
  * 3. 消息区（`MessageList`）：**倒置列表**（V6：数据倒序 + `scaleY(-1)`，§34）、工具气泡带工具名、
  *    空气泡不渲染、**工具输出 / 压缩摘要默认折叠**、流式实时正文 + 思考占位；
@@ -29,6 +35,7 @@ import {
   MESSAGE_DELETE_CAPABILITY,
   MESSAGE_QUOTE_CAPABILITY,
   type MessageDTO,
+  type MessageFileRef,
   type MessageQuote,
 } from 'virlen-remote'
 import { useStore, useStoreSelector } from '../../lib/store'
@@ -37,6 +44,7 @@ import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import { linkStore } from '../../store/link'
 import { baseNameOf } from '../../lib/session-groups'
+import { sizeLabel } from '../../lib/files'
 import {
   contextPercent,
   copyTextOf,
@@ -59,7 +67,9 @@ import NewChatPanel from '../components/NewChatPanel'
 import SessionDrawer from '../components/SessionDrawer'
 import SessionInfoSheet from '../components/SessionInfoSheet'
 import SettingsSheet from '../components/SettingsSheet'
-import { IconList, IconPlus, IconSettings, IconSignal, IconSignalOff } from '../components/icons'
+import FileSheet from '../components/FileSheet'
+import FileIcon from '../components/FileIcon'
+import { IconList, IconPlus, IconSignal, IconSignalOff } from '../components/icons'
 import './Chat.css'
 
 /** 一次性提示的停留时长（操作类反馈：复制成功 / 已加入引用）。 */
@@ -77,8 +87,19 @@ export default function Chat() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [linkOpen, setLinkOpen] = useState(false)
-  /** 外观设置（主题 / 界面大小）—— 与「会话信息」「通讯状态」是两层，入口也各自一个图标。 */
+  /**
+   * 外观设置（主题 / 界面大小）—— 与「会话信息」「通讯状态」是三层，各自一个入口。
+   *
+   * 入口在**会话抽屉底栏**（原先是顶栏第五个图标，见文件头那条纪律）。
+   */
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /**
+   * 「电脑上的文件」面板（§37）—— 浏览当前会话的工作目录。
+   *
+   * ⚠️ 入口**只有会话信息面板里那一个**（工作目录那一行下面的「浏览文件」）：
+   * 顶栏曾经也放过一个文件夹图标，但五个 38px 图标会把标题挤没（见文件头那条纪律）。
+   */
+  const [filesOpen, setFilesOpen] = useState(false)
   /**
    * 长按菜单指向的消息 id（§36）——`null` = 没开菜单。
    *
@@ -88,6 +109,13 @@ export default function Chat() {
   const [menuId, setMenuId] = useState<string | null>(null)
   /** 待引用的消息（发出去时一并带上，与桌面输入框的引用 chip 同一个模型）。 */
   const [pendingQuotes, setPendingQuotes] = useState<MessageQuote[]>([])
+  /**
+   * 待引用的**文件**（§37）—— 从「电脑上的文件」面板里挑出来的，发出去时一并带上。
+   *
+   * 状态放在这里（而不是 fileStore）：它属于**这个会话的输入区**，面板只是它的一个入口 ——
+   * 与 `pendingQuotes` 同一层，关闭面板也不该影响已经挑好的文件。
+   */
+  const [pendingFiles, setPendingFiles] = useState<MessageFileRef[]>([])
   /** 一次性提示（复制成功 / 已加入引用 / 操作失败）。 */
   const [toast, setToast] = useState<string | null>(null)
   /**
@@ -260,8 +288,9 @@ export default function Chat() {
   const submit = () => {
     const text = input
     const quotes = pendingQuotes
+    const files = pendingFiles
     // 无会话时由 store 负责「先创建再发送」（发送这一刻才创建）
-    const accepted = run('send', () => chatStore.send(text, quotes))
+    const accepted = run('send', () => chatStore.send(text, quotes, files))
     /*
      * ⚠️ 没被受理就**什么都不做**：`run` 里那把同步闸刀挡的就是「回车连击 / 手滑点两下」。
      * 若无会话，`send` 会**先建会话再发**，放过一次就是并行建出两个空会话；
@@ -270,6 +299,7 @@ export default function Chat() {
     if (!accepted) return
     setInput('')
     setPendingQuotes([])
+    setPendingFiles([])
     // 缩回一行：否则发完一条长消息，输入框还占着好几行高度（里面却已经空了）
     if (inputRef.current) inputRef.current.style.height = ''
     // 发出即落到最新一屏（此刻用户的眼睛在输入框上，留在半截历史里会看不到自己刚发的消息）
@@ -303,6 +333,23 @@ export default function Chat() {
 
   const removeQuote = useCallback((messageId: string) => {
     setPendingQuotes((prev) => prev.filter((q) => q.messageId !== messageId))
+  }, [])
+
+  /**
+   * 从文件面板加入一个待引用的文件（§37）—— 面板的「引用」按钮走它。
+   *
+   * 用路径去重（而不是整条引用比）：同一个文件连点两下不该变成两条 chip；
+   * 去重键与电脑侧的 `sanitizeFileRefs` 同一个（路径归一后）。
+   *
+   * ⚠️ `useCallback` 是必需的（不是优化）：它被作为 prop 传给 `FileSheet`，
+   * 每次换引用会让面板整棵子树重渲染（§29 的同一条纪律）。
+   */
+  const addFileRef = useCallback((ref: MessageFileRef) => {
+    setPendingFiles((prev) => (prev.some((f) => f.path === ref.path) ? prev : [...prev, ref]))
+  }, [])
+
+  const removeFileRef = useCallback((path: string) => {
+    setPendingFiles((prev) => prev.filter((f) => f.path !== path))
   }, [])
 
   /**
@@ -416,15 +463,11 @@ export default function Chat() {
               <IconPlus />
             </button>
           )}
-          <button
-            type="button"
-            className="iconbtn"
-            title="设置（主题 / 界面大小）"
-            aria-label="设置"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <IconSettings />
-          </button>
+          {/*
+            三个为止。要加第四个之前，先看 `Chat.css` 的 `.chat__head-actions`
+            （五个图标 = 206px，把左侧标题压成一行省略号）—— 新功能先问「它属于抽屉、
+            信息面板，还是输入区」。
+          */}
           <button
             type="button"
             className="iconbtn"
@@ -579,6 +622,37 @@ export default function Chat() {
             ))}
           </div>
         )}
+        {/*
+          待引用的文件（§37）：与引用 chip 同一套形状（左侧竖条 + 可删），
+          但带**文件图标**与体积 —— 同一个目录下的两个 `index.ts` 只靠名字区分不开，
+          图标 + 体积是手机上唯一的分辨依据。
+        */}
+        {pendingFiles.length > 0 && (
+          <div className="chat__files">
+            {pendingFiles.map((file) => (
+              <div className="file-chip" key={file.path}>
+                <FileIcon name={file.name} isDir={file.isDir} className="file-chip__icon" />
+                {/* `title` 给完整路径：chip 上放不下，但也别让用户彻底看不到 */}
+                <span className="file-chip__name" title={file.path}>
+                  {file.name}
+                </span>
+                {file.isDir ? (
+                  <span className="file-chip__size">目录</span>
+                ) : (
+                  file.size != null && <span className="file-chip__size">{sizeLabel(file.size)}</span>
+                )}
+                <button
+                  type="button"
+                  className="file-chip__remove"
+                  aria-label="移除文件引用"
+                  onClick={() => removeFileRef(file.path)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="chat__input-row">
           <textarea
             className="chat__textarea"
@@ -614,10 +688,10 @@ export default function Chat() {
             <button
               type="button"
               className="btn btn--primary btn--small"
-              /* 只引用不写正文也允许发（与桌面同口径：电脑侧会补「请针对引用的消息回复」） */
+              /* 只引用 / 只附文件不写正文也允许发（与桌面同口径：电脑侧会补一句兜底正文） */
               disabled={
                 busy ||
-                (!input.trim() && pendingQuotes.length === 0) ||
+                (!input.trim() && pendingQuotes.length === 0 && pendingFiles.length === 0) ||
                 (!currentId && !can('session.create'))
               }
               aria-busy={busy}
@@ -632,9 +706,44 @@ export default function Chat() {
         </div>
       </footer>
 
-      <SessionDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <SessionDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        /*
+         * 设置（主题 / 界面大小）的**唯一入口**（在抽屉底栏）：
+         * 抽屉先收起再开面板 —— 两层浮层不该叠在一起（与「浏览文件」同一条纪律）。
+         */
+        onOpenSettings={() => {
+          setDrawerOpen(false)
+          setSettingsOpen(true)
+        }}
+      />
       {sheetOpen && currentId && (
-        <SessionInfoSheet sessionId={currentId} onClose={() => setSheetOpen(false)} />
+        <SessionInfoSheet
+          sessionId={currentId}
+          onClose={() => setSheetOpen(false)}
+          /* 会话信息面板里的「浏览文件」：先收起信息面板，再开文件面板（两层不该叠在一起） */
+          onBrowseFiles={() => {
+            setSheetOpen(false)
+            setFilesOpen(true)
+          }}
+        />
+      )}
+      {filesOpen && currentId && (
+        <FileSheet
+          sessionId={currentId}
+          onClose={() => setFilesOpen(false)}
+          /*
+           * 文件面板 → 输入区（§37「引用到对话」）：面板只上报「这个文件」，
+           * 状态住在输入区（`pendingFiles`）—— 关面板不清空、发完才清。
+           *
+           * 能力门在面板里（`fileStore.canReference()`）：旧电脑端会静默丢掉 `files`，
+           * 那时按钮根本不出现（而不是点了没反应）。
+           */
+          onReference={addFileRef}
+          onUnreference={removeFileRef}
+          referenced={pendingFiles}
+        />
       )}
       {linkOpen && <LinkSheet onClose={() => setLinkOpen(false)} />}
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}

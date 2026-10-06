@@ -5,7 +5,9 @@
  * - **模型**：看当前 + 切换（`host.session.setModel`，与桌面 model-switcher 等价）；
  * - **工作目录**：**只读** —— 用户 2026-09-28 拍板：工作目录只在新建会话时确定，
  *   已有会话不可改（否则 systemPrompt / AGENTS.md 快照会与新目录错配）；
- * - **上下文**：占用百分比 + 压缩（**不可逆**，二次确认后传 `confirm:true`）；
+ * - **上下文**：占用百分比 + 压缩（**不可逆**，二次确认后传 `confirm:true`）。
+ *   压缩方式有两档（§22）：**AI 摘要**（要一次模型调用）与**正文压缩**（本地渲染），
+ *   电脑端声明 `COMPRESS_MODE_CAPABILITY` 时各给一个按钮，否则只给一个（走电脑侧设置）；
  * - 会话写操作（重命名 / 置顶 / 删除 / 继续）。
  *
  * 为什么与抽屉分开：抽屉是「在会话之间移动」，这里是「对当前会话动手」——
@@ -17,25 +19,53 @@
  * （最吓人的是「重命名 + 删除」同时在飞），而手机上「点了没反应」与「卡死」长得一模一样。
  */
 import { useEffect, useState } from 'react'
-import { COMPRESS_MIN_RATIO } from 'virlen-remote'
+import { COMPRESS_MIN_RATIO, COMPRESS_MODE_CAPABILITY, FILE_BROWSE_CAPABILITY } from 'virlen-remote'
+import type { CompressMode } from 'virlen-remote'
 import { useStore } from '../../lib/store'
 import { usePending } from '../../lib/pending'
 import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import { contextPercent, formatTokens } from '../../lib/messages'
 import { ModelPicker } from './ModelPicker'
-import { IconClose } from './icons'
+import { IconClose, IconFolder } from './icons'
 import './SessionInfoSheet.css'
 
 interface Props {
   sessionId: string
   onClose: () => void
+  /**
+   * 「浏览文件」（§37）—— 由页面接管开关（面板不该叠在面板上，见 `Chat.tsx`）。
+   *
+   * 不传 = 不渲染这个入口（例如将来的其它调用方只想要配置项）。
+   */
+  onBrowseFiles?: () => void
 }
 
 /** 面板里正在等电脑侧受理的动作（`null` = 没有在途）。 */
-type ActionKey = 'resume' | 'rename' | 'pin' | 'delete' | 'compress' | 'model'
+type ActionKey =
+  | 'resume'
+  | 'rename'
+  | 'pin'
+  | 'delete'
+  /** 旧电脑端那个笼统的入口（不传方式）。 */
+  | 'compress'
+  | 'compress-ai'
+  | 'compress-raw'
+  | 'model'
 
-export default function SessionInfoSheet({ sessionId, onClose }: Props) {
+/**
+ * 两个压缩入口（顺序 = 面板里的顺序 = 桌面 token 环菜单的顺序）。
+ *
+ * 为什么要**两个按钮**而不是一个「压缩」+ 一行方式选择：压缩本身就是不可逆的破坏性操作，
+ * 已经有一次二次确认；再叠一层选择器就是「点三下才生效」。
+ * 为什么把方式写进 `key` 而不是共用一个 `'compress'`：两个按钮要能分开转圈（见 `spinningKey`）。
+ */
+const COMPRESS_ACTIONS: ReadonlyArray<{ key: ActionKey; mode: CompressMode; label: string }> = [
+  { key: 'compress-ai', mode: 'ai', label: 'AI 摘要压缩' },
+  { key: 'compress-raw', mode: 'raw', label: '正文压缩' },
+]
+
+export default function SessionInfoSheet({ sessionId, onClose, onBrowseFiles }: Props) {
   const chat = useStore(chatStore)
   const conn = useStore(connectionStore)
   const [pickingModel, setPickingModel] = useState(false)
@@ -50,6 +80,13 @@ export default function SessionInfoSheet({ sessionId, onClose }: Props) {
    * 错误条会把原因说清楚。
    */
   const { pending, busy, run: runAction } = usePending<ActionKey>()
+  /**
+   * 本次发起压缩用的方式（`null` = 本面板还没发起过）。
+   *
+   * 只用于「哪一颗按钮在转圈 / 说『正在压缩…』」（见 `spinningKey`）——
+   * 压缩的真实进度仍以电脑侧推来的 `compacting` 为准，本字段不参与任何判定。
+   */
+  const [sentMode, setSentMode] = useState<CompressMode | null>(null)
 
   // 模型清单按需拉取（白名单投影；已缓存则直接命中）
   useEffect(() => {
@@ -80,10 +117,30 @@ export default function SessionInfoSheet({ sessionId, onClose }: Props) {
     runAction('delete', () => chatStore.deleteSession(session.id), onClose)
   }
 
-  const compress = () => {
-    if (!window.confirm('压缩上下文会用摘要替换当前整段历史，且不可撤销。继续？')) return
-    runAction('compress', () => chatStore.compressContext(session.id))
+  /**
+   * 压缩（两种方式各一个入口）。
+   *
+   * 确认文案只回答「会发生什么 + 不可撤销」；不去解释「哪种要花钱」—— 弹窗里多两句
+   * 只会让人不读就点确定（方式的差别写在两个按钮的名字上）。
+   *
+   * `mode` 为 `undefined` = 本机不传方式（旧电脑端），由电脑侧设置决定 —— 与改动前同形。
+   */
+  const compress = (key: ActionKey, label: string, mode?: CompressMode) => {
+    if (!window.confirm(`${label}会替换当前整段历史，且不可撤销。继续？`)) return
+    setSentMode(mode ?? null)
+    runAction(key, () => chatStore.compressContext(session.id, mode))
   }
+
+  /*
+   * 该在**哪一颗**按钮上转圈。
+   *
+   * `pending` 是 RPC 在途（慢才显示），`compacting` 是电脑侧受理后推来的运行时标志 ——
+   * 后者没有「是谁发起的」这个信息，所以用 `sentMode` 补上；否则两个按钮会同时转圈，
+   * 看起来像压了两次。
+   */
+  const spinningKey: ActionKey | null = compacting
+    ? (COMPRESS_ACTIONS.find((a) => a.mode === sentMode)?.key ?? null)
+    : pending
 
   return (
     <>
@@ -201,7 +258,7 @@ export default function SessionInfoSheet({ sessionId, onClose }: Props) {
             )}
           </section>
 
-          {/* ── 工作目录（只读）── */}
+          {/* ── 工作目录（只读；但可以**进去看**）── */}
           <section className="sheet__block">
             <h3 className="sheet__block-title">工作目录</h3>
             <div className="sheet__row">
@@ -212,6 +269,18 @@ export default function SessionInfoSheet({ sessionId, onClose }: Props) {
             <p className="sheet__hint">
               工作目录在新建会话时确定，已有会话不可修改 —— 需要换目录请点右上角「＋」新建会话。
             </p>
+            {/*
+              只读不等于看不见：能进去浏览 / 下载 / 上传（§37）。
+              入口放在工作目录这一行下面 —— 用户的直觉就是「从这个目录进去看」，
+              而不是到顶栏找一个没写名字的文件夹图标。
+              ⚠️ 能力门槛：旧电脑端没有 `file.browse` 时连入口都不出现（§3.5）
+            */}
+            {onBrowseFiles && session.workspace && can(FILE_BROWSE_CAPABILITY) && (
+              <button type="button" className="btn btn--small" onClick={onBrowseFiles}>
+                <IconFolder />
+                浏览文件
+              </button>
+            )}
           </section>
 
           {/* ── 上下文 ── */}
@@ -232,32 +301,53 @@ export default function SessionInfoSheet({ sessionId, onClose }: Props) {
                     style={{ width: `${percent ?? 0}%` }}
                   />
                 </div>
-                {can('session.compress') && (
-                  <button
-                    type="button"
-                    className="btn btn--small"
-                    disabled={!compressible || compacting || working || busy}
-                    aria-busy={busy || compacting}
-                    onClick={compress}
-                  >
-                    {/*
-                     * 两段合成一条「在压缩」的连续反馈：`pending` 是 RPC 在途（慢才显示），
-                     * `compacting` 是电脑侧的运行时标志（受理之后才推）——中间那一下不能断，
-                     * 否则用户会以为「压了一下、没反应」。
-                     */}
-                    {(pending === 'compress' || compacting) && (
-                      <span className="spinner spinner--sm" aria-hidden="true" />
-                    )}
-                    {compacting ? '正在压缩…' : '压缩上下文'}
-                  </button>
-                )}
+                {can('session.compress') &&
+                  (can(COMPRESS_MODE_CAPABILITY) ? (
+                    <div className="sheet__actions">
+                      {COMPRESS_ACTIONS.map(({ key, mode, label }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          className="btn btn--small"
+                          disabled={!compressible || compacting || working || busy}
+                          aria-busy={busy || compacting}
+                          onClick={() => compress(key, label, mode)}
+                        >
+                          {spinningKey === key && (
+                            <span className="spinner spinner--sm" aria-hidden="true" />
+                          )}
+                          {compacting && spinningKey === key ? '正在压缩…' : label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    /*
+                     * 旧电脑端（没声明 `COMPRESS_MODE_CAPABILITY`）：**只给一个按钮**且不传 `mode`
+                     * —— 它会把 `mode` 静默丢掉、照自己的设置压（让用户以为选了方式而实际没生效，
+                     * 比「没得选」糟得多）。
+                     */
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      disabled={!compressible || compacting || working || busy}
+                      aria-busy={busy || compacting}
+                      onClick={() => compress('compress', '压缩上下文')}
+                    >
+                      {pending === 'compress' || compacting ? (
+                        <span className="spinner spinner--sm" aria-hidden="true" />
+                      ) : null}
+                      {compacting ? '正在压缩…' : '压缩上下文'}
+                    </button>
+                  ))}
                 <p className="sheet__hint">
                   {compacting
                     ? '电脑侧正在压缩，完成后消息列表会自动刷新。'
                     : working
                       ? '正在回复中，结束后才能压缩。'
                       : compressible
-                        ? '压缩会用摘要替换整段历史，不可撤销。'
+                        ? can(COMPRESS_MODE_CAPABILITY)
+                          ? '两种方式都会把整段历史换成一条压缩结果，且不可撤销。'
+                          : '本机不传方式（旧电脑端）：走电脑端设置里的那一档，不可撤销。'
                         : `占用未达到 ${Math.round(COMPRESS_MIN_RATIO * 100)}%，无需压缩。`}
                 </p>
               </>

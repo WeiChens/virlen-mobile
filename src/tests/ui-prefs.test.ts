@@ -6,8 +6,11 @@
  * 「手机切了深色、应用还是白的」这种说不清的现象。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   DEFAULT_PREFS,
+  SIZE_PREFS,
   isSizePref,
   isThemePref,
   parsePrefs,
@@ -79,12 +82,39 @@ describe('偏好纯函数', () => {
     })
   })
 
-  it('类型守卫：只认三个取值', () => {
+  it('类型守卫：只认固定取值（主题三档 / 界面大小五档）', () => {
     expect(['system', 'light', 'dark'].every(isThemePref)).toBe(true)
     expect(isThemePref('auto')).toBe(false)
     expect(isThemePref(undefined)).toBe(false)
+    // 五档全部合法 —— 含新增的两档（更小 / 更大）
+    expect(SIZE_PREFS.every(isSizePref)).toBe(true)
+    expect(['xs', 's', 'm', 'l', 'xl'].every(isSizePref)).toBe(true)
+    // 旧三档仍是合法值：存储里已有的 `{"size":"l"}` 不需要任何迁移
     expect(['s', 'm', 'l'].every(isSizePref)).toBe(true)
-    expect(isSizePref('xl')).toBe(false)
+    expect(isSizePref('xxl')).toBe(false)
+    expect(isSizePref('huge')).toBe(false)
+    expect(isSizePref(undefined)).toBe(false)
+  })
+
+  /**
+   * 五档的**两份约定**（`lib/prefs.ts` 的取值 ↔ `theme.css` 的 `--fs`）必须一一对应。
+   *
+   * 为何值得直接读 CSS 来对：少一条 `:root[data-size]` 规则 = 那一档选中后**没有任何缩放**
+   * （页面看着就像「点了没反应」），而类型检查与组件用例都看不见 —— 它们只关心「属性写对没写对」。
+   */
+  it('theme.css 每一档都有 --fs：取值非零、严格递增、中档恒为 1', () => {
+    // jsdom 环境下 `import.meta.url` 不是 file:// 协议，所以按仓库根取（vitest 的 cwd 就是它）
+    const css = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8')
+    const found = [...css.matchAll(/:root\[data-size='([a-z]+)'\]\s*\{\s*--fs:\s*([\d.]+);/g)]
+    // 顺序也要一致：面板里的顺序就是它（由小到大）
+    expect(found.map((m) => m[1])).toEqual([...SIZE_PREFS])
+    const values = found.map((m) => Number(m[2]))
+    expect(values.every((v) => Number.isFinite(v) && v > 0)).toBe(true)
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]!).toBeGreaterThan(values[i - 1]!)
+    }
+    // 中档是默认值也是基准：改了它等于把所有用户的字号一起改了
+    expect(values[SIZE_PREFS.indexOf('m')]).toBe(1)
   })
 
   it('resolveTheme：system 听系统的，显式选了就不听', () => {

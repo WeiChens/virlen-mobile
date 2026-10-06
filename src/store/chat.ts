@@ -9,14 +9,17 @@
  */
 import {
   BridgeError,
+  COMPRESS_MODE_CAPABILITY,
   MESSAGE_DELETE_CAPABILITY,
   type AgentOptionDTO,
   type AnswerAction,
+  type CompressMode,
   type ContextInfoDTO,
   type Endpoint,
   type HostEvents,
   type InteractionDTO,
   type MessageDTO,
+  type MessageFileRef,
   type MessageQuote,
   type ModelProviderDTO,
   type RunningToolDTO,
@@ -426,12 +429,20 @@ class ChatStore extends Store<ChatState> {
    * RPC 只回投递确认 —— 进度看 `compacting`，结果看 `messages.reset`（重拉窗口）+ 摘要消息。
    * 调用方（UI）负责先弹二次确认，且传 `confirm: true`（电脑侧独立校验，缺了会拒）。
    *
+   * @param mode 压缩方式（`ai` = AI 摘要 / `raw` = 正文压缩）。
+   *   ⚠️ **只在电脑端声明 `COMPRESS_MODE_CAPABILITY` 时才会被发出去**：旧电脑端不认这个字段，
+   *   参数会被静默丢弃、然后按电脑侧设置压缩（用户以为选了正文压缩，实际走的是 AI 摘要、还花了钱）。
+   *   不传 = 沿用电脑侧设置里的那一档（与改动前完全同形的一次调用）。
    * @returns 是否被电脑侧接受
    */
-  async compressContext(sessionId: string): Promise<boolean> {
+  async compressContext(sessionId: string, mode?: CompressMode): Promise<boolean> {
     if (!this.can('session.compress')) return false
     try {
-      await getCaller().call('host.session.compress', { sessionId, confirm: true })
+      await getCaller().call('host.session.compress', {
+        sessionId,
+        confirm: true,
+        ...(mode && this.can(COMPRESS_MODE_CAPABILITY) ? { mode } : {}),
+      })
       return true
     } catch (err) {
       this.setState((s) => ({ ...s, error: messageOf(err) }))
@@ -499,15 +510,20 @@ class ChatStore extends Store<ChatState> {
     }
   }
 
-  async send(text: string, quotes: MessageQuote[] = []): Promise<void> {
+  async send(
+    text: string,
+    quotes: MessageQuote[] = [],
+    files: MessageFileRef[] = [],
+  ): Promise<void> {
     const snapshot = this.getSnapshot()
     const trimmed = text.trim()
     /*
-     * 只引用、不写正文也允许发（§36）：与桌面**同一条口径** —— 电脑端会在正文为空时
-     * 补一句「请针对引用的消息回复」（`buildUserContent`）。若这里拦下来，用户引用了
-     * 一条消息却发不出去，会以为「引用坏了」。
+     * 只引用 / 只附文件、不写正文也允许发（§36 / §37）：与桌面**同一条口径** ——
+     * 电脑端会在正文为空时补一句（引用 → 「请针对引用的消息回复」，只有文件 → 「看看这些文件」，
+     * 见 `buildUserContent`）。若这里拦下来，用户引用了 / 附了文件却发不出去，
+     * 会以为「引用坏了」。
      */
-    if (!trimmed && quotes.length === 0) return
+    if (!trimmed && quotes.length === 0 && files.length === 0) return
     try {
       let sessionId = snapshot.currentSessionId
       if (!sessionId) {
@@ -521,12 +537,13 @@ class ChatStore extends Store<ChatState> {
       //    新会话走 `createSessionFromDraft()`（内部 `openSession()` 已 await 订阅应答），
       //    已有会话来自 `openSession()` / `resync()`；电脑侧另有「自建会话自动订阅」兜底。
       //
-      // ⚠️ `quotes` 是可选字段：无引用时不带（不在线上传一个空数组，也不让旧电脑端
+      // ⚠️ `quotes` / `files` 都是可选字段：没有时不带（不在线上传一个空数组，也不让旧电脑端
       //    多看到一个它不认识的字段）
       await getCaller().call('host.session.send', {
         sessionId,
         text: trimmed,
         ...(quotes.length > 0 ? { quotes } : {}),
+        ...(files.length > 0 ? { files } : {}),
       })
     } catch (err) {
       this.setState((s) => ({ ...s, error: messageOf(err) }))

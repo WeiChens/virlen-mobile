@@ -29,26 +29,41 @@
   white-space: nowrap;
 }
 /*
- * 界面大小三档前面的那个「A」：**越大的档 A 越大**。
+ * 界面大小五档前面的那个「A」：**越大的档 A 越大**（与文字标签竖向叠放，见下）。
  *
- * 用 `::before` 而不是 DOM 文本 —— 它是纯视觉示意，不该混进「按钮文案」。
- * 尺寸写死（不乘 `--fs`）：它演示的正是「三档之间差多少」，若自己也跟着当前档位缩放，
+ * 用 `::before` 而不是 DOM 文本 —— 它是纯视觉示意，不该混进「按钮文案」（用例按文案找按钮）。
+ * 尺寸写死（不乘 `--fs`）：它演示的正是「五档之间差多少」，若自己也跟着**当前**档位缩放，
  * 反而看不出差别了。
+ *
+ * 为何竖向叠放（而主题那排是图标 + 文字横着放）：360px 屏上五列各只有 ~60px，
+ * 「A」+ 两个字（如「特大」）横着放会被 `overflow: hidden` 在字中间截断 ——
+ * 截断的标签比不显示更糟（用户会以为字就是这样的）。
  */
+.settings__seg-item[data-opt] {
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.15;
+}
 .settings__seg-item[data-opt]::before {
   content: 'A';
   font-weight: 600;
   line-height: 1;
   color: var(--fg-dim);
 }
+.settings__seg-item[data-opt='xs']::before {
+  font-size: 10px;
+}
 .settings__seg-item[data-opt='s']::before {
-  font-size: 11px;
+  font-size: 12px;
 }
 .settings__seg-item[data-opt='m']::before {
   font-size: 14px;
 }
 .settings__seg-item[data-opt='l']::before {
-  font-size: 17px;
+  font-size: 16px;
+}
+.settings__seg-item[data-opt='xl']::before {
+  font-size: 18px;
 }
 .settings__seg-item.is-on {
   border-color: var(--accent);

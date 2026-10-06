@@ -16,6 +16,8 @@
 .chat__head-main {
   flex: 1;
   min-width: 0;
+  /* 双保险：即使内部的省略号规则哪天被改坏，文字也不会溢出到右边的图标上 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -73,10 +75,24 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/*
+  ── 右上角的图标按钮组 ──
+
+  ⚠️ **最多三个**（2026-10 收敛，真机反馈「五个按钮和左边叠在一起了」）。
+  每个图标 38px（`.iconbtn`，且 `flex: none` 不会被压扁），五个 + 间距就是 ~206px；
+  360px 的屏上扣掉左右内边距只剩 336px，于是左侧那块（设备名 / 标题 / 摘要）只剩 ~100px ——
+  标题被切成一个省略号，设备名与状态胶囊互相顶，看着就是「按钮盖住了左边」。
+
+  两个低频动作因此各自下沉（见 `Chat.tsx` 文件头）：设置 → 会话抽屉底栏，
+  电脑上的文件 → 会话信息面板的「工作目录」那一行。要加第四个图标之前先算一遍这笔宽度帐，
+  或者去想「它属于哪个面板」。
+
+  间距 6px：图标之间是**不同**动作，太贴（4px）时在真机上会误点。
+*/
 .chat__head-actions {
   flex: none;
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 /*
   `.iconbtn`（图标按钮）的**基础样式在 index.css**：登录页（设置入口）与聊天页都用它，
@@ -365,6 +381,24 @@
   gap: 4px;
   margin-bottom: 6px;
 }
+/*
+ * 气泡里的文件引用（§37）：排在**正文之后**（读的顺序是「我说了什么 → 我附了什么」）。
+ *
+ * `margin-top` 而不是 `margin-bottom`：它在最后，下面的间距属于气泡自己的 padding。
+ * 左缩进 0：chip 自带的左侧竖条已经承担了「这是一个附件」的视觉语。
+ */
+.msg__files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+/* 气泡里长名要做的事与引用条一致：不换行、沏出去用省略号 */
+.msg__files .file-chip__name,
+.msg__files .file-chip__size {
+  color: currentColor;
+  opacity: 0.85;
+}
 .quote-bar {
   display: flex;
   align-items: baseline;
@@ -531,7 +565,8 @@
 }
 
 /* ── 待引用的 chip（§36）：发出去之前看得见、删得掉 ── */
-.chat__quotes {
+.chat__quotes,
+.chat__files {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -561,6 +596,63 @@
   text-overflow: ellipsis;
 }
 .quote-chip__remove {
+  flex: none;
+  margin-left: auto;
+  width: calc(24px * var(--fs));
+  height: calc(24px * var(--fs));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: calc(16px * var(--fs));
+  line-height: 1;
+  cursor: pointer;
+}
+
+/*
+ * ── 文件引用的 chip（§37）：与引用 chip **同一套形状**（左侧竖条 + 可删）──
+ *
+ * 差别只有两处：① 带文件图标（同目录下两个 `index.ts` 只靠名字分不出来）；
+ * ② 带体积 / 「目录」二字（同一个文件在不同版本里多大，是用户判断「该不该发」的依据）。
+ * 三项合成一个类，输入区（可删）与气泡里（只读，`--bare`）共用它们。
+ */
+.file-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-left: 3px solid var(--accent-text);
+  border-radius: 6px;
+  background: var(--bg-card);
+  font-size: calc(12.5px * var(--fs));
+  color: var(--fg-2);
+}
+/* 气泡里的那一种：背景跟上气泡底色（再叠一层卡片色会看起来像另一个气泡） */
+.file-chip--bare {
+  background: transparent;
+  border-radius: 4px;
+}
+.file-chip__icon {
+  flex: none;
+  width: calc(14px * var(--fs));
+  height: calc(14px * var(--fs));
+  color: var(--fg-muted);
+}
+.file-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.file-chip__size {
+  flex: none;
+  color: var(--fg-muted);
+}
+.file-chip__remove {
   flex: none;
   margin-left: auto;
   width: calc(24px * var(--fs));

@@ -101,6 +101,8 @@ import {
   QUOTE_PREVIEW_MAX,
 } from '../../lib/messages'
 import { buildRows, rendersNothing, toolGroupView, type ListRow } from '../../lib/message-rows'
+import { sizeLabel } from '../../lib/files'
+import FileIcon from './FileIcon'
 import InteractionCard from '../../components/InteractionCard'
 import Markdown from '../../components/Markdown'
 import { IconChevronDown, IconTerminal } from './icons'
@@ -270,6 +272,14 @@ const MessageRow = memo(function MessageRow({
    * 这里只显示**单行预览**（`firstLinePreview`）：引文快照可能是一整段 AI 回答。
    */
   const quotes = message.quotes ?? []
+  /*
+   * 文件引用（§37）：与引用条同一层（附件也是「本条消息携带的上下文」），
+   * 但排在**正文之后** —— 用户读的顺序是「我说了什么 → 我附了什么」。
+   *
+   * ⚠️ 手机上不能点开（那是电脑上的文件）：`title` 给完整路径，它是**用来对认的**，
+   * 不是一个入口（与桌面「点开用系统默认程序打开」故意不同）。
+   */
+  const files = message.files ?? []
 
   // 用户消息按纯文本渲染（与桌面一致）：用户输入什么就显示什么，不做 Markdown 解释
   return (
@@ -288,6 +298,23 @@ const MessageRow = memo(function MessageRow({
           </div>
         )}
         {message.role === 'assistant' ? <Markdown content={message.text} /> : message.text}
+        {files.length > 0 && (
+          <div className="msg__files">
+            {files.map((file) => (
+              <div className="file-chip file-chip--bare" key={file.path}>
+                <FileIcon name={file.name} isDir={file.isDir} className="file-chip__icon" />
+                <span className="file-chip__name" title={file.path}>
+                  {file.name}
+                </span>
+                {file.isDir ? (
+                  <span className="file-chip__size">目录</span>
+                ) : (
+                  file.size != null && <span className="file-chip__size">{sizeLabel(file.size)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

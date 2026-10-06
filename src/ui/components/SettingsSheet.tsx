@@ -37,7 +37,13 @@ const THEME_ICON: Record<ThemePref, ComponentType<SVGProps<SVGSVGElement>>> = {
   light: IconSun,
   dark: IconMoon,
 }
-const SIZE_LABEL: Record<SizePref, string> = { s: '小', m: '中', l: '大' }
+const SIZE_LABEL: Record<SizePref, string> = {
+  xs: '特小',
+  s: '小',
+  m: '中',
+  l: '大',
+  xl: '特大',
+}
 
 export default function SettingsSheet({ onClose }: { onClose: () => void }) {
   const prefs = useStore(prefsStore)
@@ -87,9 +93,10 @@ export default function SettingsSheet({ onClose }: { onClose: () => void }) {
                 <button
                   key={value}
                   type="button"
-                  /* `data-opt` 只给 CSS 用：三档前面各有一个「A」，越大的档 A 越大 ——
-                     预览这个东西本来就适合直接看，而不是读「小 / 中 / 大」两个字。（箭头字符
-                     由 `::before` 生成，不进 DOM 文本，免得「按钮文案」变得不好找） */
+                  /* `data-opt` 只给 CSS 用：五档前面各有一个「A」，越大的档 A 越大，
+                     并与「特小 / 小 / …」竖向叠放（五列在 360px 屏上放不下横排的 A + 两个字）。
+                     那两处尺寸都由 `::before` 生成，不进 DOM 文本 —— 「按钮文案」因此始终只是
+                     标签本身（用例按文案找按钮）。 */
                   data-opt={value}
                   className={`settings__seg-item${prefs.size === value ? ' is-on' : ''}`}
                   aria-pressed={prefs.size === value}
@@ -100,8 +107,9 @@ export default function SettingsSheet({ onClose }: { onClose: () => void }) {
               ))}
             </div>
             <p className="sheet__hint">
-              放大的是全站文字与主要按钮的尺寸，版式结构不变（所以长命令、长摘要在「大」档下
-              也只会重排，不会跑到屏幕外）。
+              共五档：特小 / 小 / 中 / 大 / 特大。缩放的是全站文字与主要按钮的尺寸，版式结构不变
+              （所以长命令、长摘要在任何一档下也只会重排，不会跑到屏幕外）。
+              最小的两档连按钮本身也会变小，因而更难精确点中。
             </p>
           </section>
 
