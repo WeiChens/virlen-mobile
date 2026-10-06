@@ -36,7 +36,7 @@ import {
   toFileRef,
   workspaceName,
 } from '../../lib/files'
-import { IconBack, IconClose, IconDownload, IconEdit, IconFolder, IconUpload } from './icons'
+import { IconBack, IconClose, IconDownload, IconFolder, IconUpload } from './icons'
 import FileIcon from './FileIcon'
 import './FileSheet.css'
 

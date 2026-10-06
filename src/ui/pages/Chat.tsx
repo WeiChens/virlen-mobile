@@ -44,6 +44,7 @@ import { chatStore } from '../../store/chat'
 import { connectionStore } from '../../store/connection'
 import { linkStore } from '../../store/link'
 import { baseNameOf } from '../../lib/session-groups'
+import { pickEntrySession } from '../../lib/session-entry'
 import { sizeLabel } from '../../lib/files'
 import {
   contextPercent,
@@ -157,12 +158,23 @@ export default function Chat() {
     [],
   )
 
+  /**
+   * 进入这一页（连接就绪后挂载）：拉会话列表，并**默认打开一个会话**。
+   *
+   * 打开哪一个由 `lib/session-entry.ts::pickEntrySession` 定（用户拍板，2026-10）：
+   * **正在工作的 → 否则最近更新的**。⚠️ 以前这里用的是 `snap.sessions[0]`，而列表顺序是
+   * 「置顶优先 → `updatedAt` 倒序」—— 于是**置顶的老会话**会把「最近在用的那个」顶掉，
+   * 表现为「每次打开手机都跑到一个几天没动的会话里」。置顶不参与这个选择（理由见该文件）。
+   *
+   * 已经有当前会话时**不切**：这是链路抖动 / 代际更替后的重新挂载，用户正看着的那个会话
+   * 不该被抢走（那条路上的重同步是 `chatStore.resync`，它自己只管重拉，不改选择）。
+   */
   useEffect(() => {
     void chatStore.loadSessions().then(() => {
       const snap = chatStore.getSnapshot()
-      if (!snap.currentSessionId && snap.sessions[0]) {
-        void chatStore.openSession(snap.sessions[0].id)
-      }
+      if (snap.currentSessionId) return
+      const next = pickEntrySession(snap.sessions)
+      if (next) void chatStore.openSession(next.id)
     })
   }, [])
 

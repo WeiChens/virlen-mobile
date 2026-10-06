@@ -11,6 +11,7 @@
  * 真实桌面端（Tauri）换成接 `sessionStore` / `chat-service` 的数据源即可。
  *
  * URL 参数：`?mode=rtc|broadcast` `?signal=<基址>` `?room=<房间>` `?host=<电脑标识>`
+ * `?files=relay` `?entry=work|pin`（后两个是「造出真机上才出现的形态」的开关，见下文各自的说明）
  */
 import QRCode from 'qrcode'
 import {
@@ -19,6 +20,7 @@ import {
   RtcTransport,
   SseSignalingClient,
   registerHostHandlers,
+  type SessionSummaryDTO,
   type Transport,
 } from 'virlen-remote'
 import { createMockHostDataSource, type MockHostDataSource } from 'virlen-remote/testing'
@@ -40,6 +42,21 @@ const ROOM = params.get('room') ?? HOST_ID
  * 这里只是让模拟宿主按同一句口径拒。）
  */
 const FILE_LINK: 'direct' | 'relay' = params.get('files') === 'relay' ? 'relay' : 'direct'
+
+/**
+ * 模拟「进入手机端时默认打开哪个会话」（用户拍板，2026-10）—— `?entry=work` / `?entry=pin`。
+ *
+ * 这两种形态在演示宿主里**不会自然出现**：mock 那两条会话本来就按时序倒序、且没有一条处于
+ * 「工作中」。而真机上要让这个行为显形，恰恰需要「置顶的老会话排第一」或「另一个会话正在干活」。
+ * 做法与 `FILE_LINK` 同一条：**只改 `host.session.list` 的返回**，不动 mock 内部的会话状态 ——
+ * 手机端的选择逻辑照样是真在跑（消息 / 订阅 / 打开会话都走真实 mock）。
+ *
+ * - `work`：`demo-1` 正在工作（更旧）+ `demo-2` 置顶且**更近** → 手机端应当打开 **demo-1**；
+ * - `pin`：`demo-2` 置顶且**更旧**、排第一 → 手机端应当打开 **demo-1**（最近更新的，置顶不算数）；
+ * - 不带参数：原样（`demo-1` 最近且未置顶，两种口径下都是它 —— 看不出区别）。
+ */
+const ENTRY_DEMO: 'work' | 'pin' | null =
+  params.get('entry') === 'work' ? 'work' : params.get('entry') === 'pin' ? 'pin' : null
 
 /*
  * ICE 默认值来自信令服务（`GET <SIGNAL_BASE>ice`）—— 本文件里没有任何 TURN 凭证（§31）。
@@ -134,6 +151,27 @@ if (root) {
     <div class="row">
       <span class="muted">非中继门槛：以 <code>?files=relay</code> 打开本页 → 所有文件操作一律拒（手机端应整面板显示同一句理由）</span>
     </div>
+    <h2>进入时默认打开哪个会话</h2>
+    <p class="muted">
+      手机端进入后打开<b>正在工作的会话</b>；没有在工作的就打开<b>最近更新的那个</b>（都是两份状态里的
+      “最近”：<code>updatedAt</code> 最大）。<b>置顶不参与这个选择</b> —— 列表顺序仍是电脑侧给的
+      「置顶优先 → updatedAt 倒序」，手机端不重排那顺序，只是不再拿“排第一”当默认入口
+      （置顶的意思是「别让它被淹没」，不是「每次进来都回到它」）。
+      演示宿主默认那两条本来就按时序倒序、且都不在工作中，看不出区别，所以用 URL 参数造出两种形态：
+    </p>
+    <div class="row">
+      <a data-entry="pin" href="?entry=pin">?entry=pin</a>
+      <span class="muted">demo-2（空会话）置顶但更旧、排第一 → 手机端应打开「演示：手机控制」（最近更新的，<b>不是</b>排第一那个）</span>
+    </div>
+    <div class="row">
+      <a data-entry="work" href="?entry=work">?entry=work</a>
+      <span class="muted">demo-2 置顶且更近、demo-1 正在工作 → 手机端应打开「演示：手机控制」（工作中优先，哪怕它更旧）</span>
+    </div>
+    <p class="muted">
+      验收方式：手机上断开再重连（或刷新页面），看顶部标题是哪一个。
+      ⚠️ 只改 <code>host.session.list</code> 的返回，会话本体 / 消息 / 订阅仍是 mock 的真数据（
+      <code>demo-1</code> 自带两条演示消息）。
+    </p>
     <h2>事件日志</h2>
     <pre id="log"></pre>
   `
@@ -216,6 +254,34 @@ async function start(): Promise<void> {
     })
 
   const registration = registerHostHandlers(endpoint, source)
+
+  /*
+   * 「进入时默认打开哪个会话」的演示（见 `ENTRY_DEMO`）—— 只改列表这一处的返回，
+   * 会话本体 / 消息 / 订阅全走 mock 的真数据（`demo-1` 自带两条演示消息，看得见打开了哪个）。
+   */
+  if (ENTRY_DEMO) {
+    const realList = source.listSessions.bind(source)
+    source.listSessions = async () => {
+      const [one, two] = await realList()
+      if (!one || !two) return realList()
+      const now = Date.now()
+      const older = now - 60 * 60 * 1000
+      // 顺序照电脑侧的排法：置顶优先 → `updatedAt` 倒序
+      const list: SessionSummaryDTO[] =
+        ENTRY_DEMO === 'work'
+          ? [
+              { ...two, updatedAt: now, pinned: true },
+              { ...one, updatedAt: older, working: true },
+            ]
+          : [
+              { ...two, updatedAt: older, pinned: true },
+              { ...one, updatedAt: now },
+            ]
+      log(`入口演示（${ENTRY_DEMO}）：列表 → ${list.map((s) => s.id).join(' , ')}`)
+      return list
+    }
+  }
+
   // 事件既推给手机、也打到日志，便于联调观察
   source.bind((topic, payload) => {
     log(`→ ${topic}`)
@@ -266,6 +332,12 @@ function render(): void {
 
   document.getElementById('m-rtc')?.classList.toggle('active', mode === 'rtc')
   document.getElementById('m-bc')?.classList.toggle('active', mode === 'broadcast')
+  // 入口演示的两个链接：带上当前 URL 里已有的参数（否则点一下就丢掉 mode / signal / room）
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('a[data-entry]')) {
+    const nextParams = new URLSearchParams(location.search)
+    nextParams.set('entry', link.dataset.entry ?? '')
+    link.href = `?${nextParams.toString()}`
+  }
 }
 
 function switchMode(next: Mode): void {
