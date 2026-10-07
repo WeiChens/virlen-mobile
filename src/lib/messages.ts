@@ -112,6 +112,21 @@ export interface ToolView {
   meta: string
   /** 正文被传输档位省略（§33）——组件据此把展开后的文案从「没有输出」换成「已省略」。 */
   omitted: boolean
+  /**
+   * 本步结果状态：`error` = 电脑侧标了 `isError`（执行失败），其余为 `ok`。
+   *
+   * ⚠️ 判据是**电脑侧的标记**（`MessageDTO.isError`），不是正文内容 —— 失败输出常常也是一
+   * 段正常文本（报错回显），靠正文里的关键字猜「失败」必然误判。字段缺席 = 没有失败标记 = ✓
+   * （旧电脑端不下发该字段，也一并按 ✓ 渲染，不假装「结果未知」）。
+   */
+  status: 'ok' | 'error'
+  /**
+   * 本条的详细内容被**延后下发**（两阶段加载第一阶段，`MessageDTO.deferred`）。
+   *
+   * 与 `omitted` 不同：那个是「按链路档位省略」（要重开会话才拿回），这个是「马上会补发」——
+   * 组件据此把展开区显示成「正在加载详细内容…」，而不是「这次调用没有输出」。
+   */
+  deferred: boolean
 }
 
 /**
@@ -131,9 +146,12 @@ export function toolView(message: MessageDTO): ToolView {
   const name = message.toolName ?? null
   const args = message.toolArgs ?? null
   const argsFull = message.toolArgsFull ?? null
+  // 成功/失败由电脑侧的 `isError` 决定（不靠正文反推）；缺席按 ✓
+  const status: ToolView['status'] = message.isError ? 'error' : 'ok'
+  const deferred = message.deferred === true
   // 两处扩展合流：上游的「已省略」标签 + 我们的入参两行（`args` / `argsFull`）
   if (lines === 0) {
-    return { name, args, argsFull, size: omitted ? '已省略' : '', meta: '', omitted }
+    return { name, args, argsFull, size: omitted ? '已省略' : '', meta: '', omitted, status, deferred }
   }
   return {
     name,
@@ -143,6 +161,8 @@ export function toolView(message: MessageDTO): ToolView {
     // 字符数复用 token 环那套口径（`12500 → 12.5k`）：同一个页面上不该有两种缩写规则
     meta: `${lines} 行 · ${formatTokens(message.text.length)} 字符`,
     omitted,
+    status,
+    deferred,
   }
 }
 

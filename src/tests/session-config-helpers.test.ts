@@ -171,6 +171,19 @@ describe('消息渲染规则', () => {
   })
 
   /*
+   * 成功/失败标志：判据只有电脑侧的 `isError` 一个。
+   *
+   * 为什么单独钉：失败输出常常也是一段**正常文本**（报错回显），成功输出里也可能出现
+   * 形似错误的字样 —— 靠正文关键字猜必然误判，只能信电脑侧的标记。
+   */
+  it('toolView：成功/失败标志来自电脑侧 isError（不靠正文反推）', () => {
+    const base = { role: 'tool' as const, id: 't', createdAt: 0, text: 'boom: 命令退出码 1' }
+    // 正文看着像报错也不算失败；字段缺席 = 没有失败标记 = ok（旧电脑端也按成功渲染）
+    expect(toolView(base).status).toBe('ok')
+    expect(toolView({ ...base, isError: true }).status).toBe('error')
+  })
+
+  /*
    * §33：被传输档位省略的工具输出 —— 折叠态就得报「已省略」。
    *
    * 为什么这一条特别重要：它与「空输出」在 DOM 里长得一模一样（正文都是空串），

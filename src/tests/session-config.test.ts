@@ -209,7 +209,9 @@ describe('§22 —— 「新对话」延迟创建', () => {
     const seq = host!.mock.calls.filter((c) =>
       ['host.session.create', 'host.session.subscribe', 'host.session.messages', 'host.session.send'].includes(c),
     )
-    expect(seq).toEqual([
+    // 两阶段加载（§38）会连发两次 `messages`（先摘要后完整）—— 合并相邻重复，只看**种类**顺序。
+    // 真要紧的不变量是「订阅先于发送落地」，那一条不受多一次拉取影响。
+    expect(seq.filter((c, i) => c !== seq[i - 1])).toEqual([
       'host.session.create',
       'host.session.subscribe',
       'host.session.messages',

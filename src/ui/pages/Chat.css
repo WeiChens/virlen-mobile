@@ -782,11 +782,6 @@
 .tool-card__head:active {
   background: var(--bg-hover);
 }
-/* 图标只负责「这是一步工具执行」的类别提示，颜色压低，不与工具名抢 */
-.tool-card__icon {
-  flex: none;
-  color: var(--fg-faint);
-}
 /*
  * 工具名走**行内代码**那一套（等宽 + 浅底），与助手消息里的 `code` 是同一种物件：
  * 它本来就是标识符。旧版把它装进一个描边小标签、那个标签又装在折叠头的描边里
@@ -836,6 +831,23 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: calc(11.5px * var(--fs));
   color: var(--fg-muted);
+}
+/*
+ * 成功/失败标志（✓ / ✗）：**取代原来的终端图标**占在最左侧。
+ *
+ * 它回答「这一步成了还是砸了」——比「这是一次工具执行」（卡片形态本身已说明）更值得占用
+ * 首位的那个位置。颜色由 `--ok` / `--danger` 两个状态色区分（图标本身只认 `currentColor`）。
+ */
+.tool-card__status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.tool-card__status--ok {
+  color: var(--ok-2);
+}
+.tool-card__status--error {
+  color: var(--danger-strong);
 }
 /* 规模（`3 行`）：折叠态右侧那个自主上边距的小字，把名字之后的空全部吃掉 */
 .tool-card__size {
@@ -926,6 +938,18 @@
   border-top: 1px solid var(--line);
   background: var(--bg-code);
   color: var(--fg-ghost);
+  font-size: calc(12px * var(--fs));
+}
+/*
+ * 两阶段加载的「正在加载」占位（§38）：与「空输出 / 已省略」同一块位置，但**不能**长成一样 ——
+ * 它说的是「马上就有」（等待中的正常态），而不是「什么都没有」或「被省略了」。
+ */
+.tool-card__deferred {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-code);
+  color: var(--fg-muted);
   font-size: calc(12px * var(--fs));
 }
 /*

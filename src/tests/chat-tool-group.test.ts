@@ -218,4 +218,24 @@ describe('工具调用组：连续多条合成一行', () => {
     expect(container!.querySelector('.tool-group')).toBeNull()
     expect(cardOf('list_files')).not.toBeNull()
   })
+
+  it('组头**不显示**成败标志：标志只属于单条工具卡（组只报「几次 + 多大」）', async () => {
+    await ready()
+    // 一条成功（演示会话那一条）、一条失败混在组里
+    push('tool-2', 'tool', { text: 'a\nb', toolName: 'grep', isError: true })
+    push('after', 'assistant', { text: '看完了。' })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    expect(container!.querySelector('.tool-group')).not.toBeNull()
+    // 组头不摆成败标志（不问「组里成功了几条」，只回答「这段里有失败」也没意义）
+    expect(groupHead().querySelector('.tool-group__status')).toBeNull()
+    // 展开后组内**每张卡片各自**带标志（失败那条在卡片上是 ✗）
+    click(groupHead())
+    expect(cardOf('grep').querySelector('.tool-card__status--error')).not.toBeNull()
+    expect(cardOf('list_files').querySelector('.tool-card__status--ok')).not.toBeNull()
+  })
 })

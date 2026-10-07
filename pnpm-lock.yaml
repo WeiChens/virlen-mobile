@@ -24,8 +24,8 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1
       virlen-remote:
-        specifier: link:../virlen-remote
-        version: link:../virlen-remote
+        specifier: 0.8.0
+        version: 0.8.0
     devDependencies:
       '@types/node':
         specifier: ^24.10.0
@@ -1380,6 +1380,10 @@ packages:
 
   vfile@6.0.3:
     resolution: {integrity: sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q==}
+
+  virlen-remote@0.8.0:
+    resolution: {integrity: sha512-RR+X0aMeS3ctsOoR65R40dbfxStcGUmOcdBno1F0JQa+/IFO4CULkMtNAzKC3A/36cuUtRdWBF15ZwvwGyaabA==}
+    engines: {node: '>=18'}
 
   vite@7.3.6:
     resolution: {integrity: sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==}
@@ -2958,6 +2962,8 @@ snapshots:
     dependencies:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
+
+  virlen-remote@0.8.0: {}
 
   vite@7.3.6(@types/node@24.19.0):
     dependencies:

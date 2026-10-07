@@ -11,6 +11,7 @@ import {
   BridgeError,
   COMPRESS_MODE_CAPABILITY,
   MESSAGE_DELETE_CAPABILITY,
+  MESSAGES_DETAIL_CAPABILITY,
   type AgentOptionDTO,
   type AnswerAction,
   type CompressMode,
@@ -94,6 +95,13 @@ export interface ChatState {
   cursor: Record<string, number | null>
   /** 正在加载更早消息。 */
   loadingOlder: boolean
+  /**
+   * 正在后台补「详细内容」（两阶段加载的第二阶段，§38）。
+   *
+   * 打开 / 续页会话时先拉一份**摘要窗口**立刻渲染（不含工具输出 / 完整入参），
+   * 随后在后台再拉一次 `full` 按 id 补齐 —— 这个标志表示「第二阶段还没回来」。
+   */
+  detailsLoading: Record<string, boolean>
   /** 待应答交互（提问 / 授权）—— 电脑侧权威，本地只是一份投影（M4）。 */
   interactions: InteractionDTO[]
   loadingSessions: boolean
@@ -156,6 +164,7 @@ const INITIAL: ChatState = {
   hasMoreMessages: {},
   cursor: {},
   loadingOlder: false,
+  detailsLoading: {},
   interactions: [],
   loadingSessions: false,
   loadingMessages: false,
@@ -176,6 +185,16 @@ const ANSWER_NOTICE: Record<string, string> = {
   'invalid-value': '选择内容不能为空',
   'unsupported-by-host': '电脑端不支持该操作',
 }
+
+/**
+ * 消息窗口加载的**超时**（毫秒）。
+ *
+ * 为何比 Endpoint 默认的 10s 长得多：电脑侧首次拉窗口要读消息存储并对整窗做投影
+ * （工具输出 / 完整入参单条可达 `TOOL_DETAIL_MAX` = 5000 字符，一窗就是数百 KB），真机上超过
+ * 10s 不罕见 —— 用默认值会把它误判成超时。两阶段加载后第一次（摘要）已经很轻，
+ * 但第二次（full）仍可能很重，故两阶段都用这个值。
+ */
+const MESSAGE_LOAD_TIMEOUT_MS = 60_000
 
 class ChatStore extends Store<ChatState> {
   /**
@@ -216,6 +235,22 @@ class ChatStore extends Store<ChatState> {
   private resyncingStreams = new Set<string>()
 
   /**
+   * 正在后台补「详细内容」的会话（两阶段加载第二阶段去重）。
+   *
+   * 为何去重：同一会话可能被 `openSession` 与 `loadOlder` 各触发一次补细节，
+   * 不去重就会并发拉两次整窗（两倍的流量，结果一样）。
+   */
+  private detailsInFlight = new Set<string>()
+
+  /**
+   * 补细节进行中又来了新的补细节请求（如刚补到一半用户又上拉续页）—— 结束后**再补一次**。
+   *
+   * 不记这一笔的话，第二次请求会被 `detailsInFlight` 挡掉，那一页的详情就永远停在 `deferred`
+   * （直到重开会话）—— 而 `loadMessageDetails` 拉的是**整窗**，重新跑一次就能把它一并补齐。
+   */
+  private detailsDirty = new Set<string>()
+
+  /**
    * 已经报过「窗口含重复 id」的会话 —— 每会话只报一次（见 `normalizeWindow`）。
    *
    * 这是**诊断**而不是状态：重复 id 是电脑侧数据的问题（本机已去重），报在控制台给开发/排查用，
@@ -240,6 +275,8 @@ class ChatStore extends Store<ChatState> {
     this.contextEventSeq = {}
     this.interactionArrivedAt.clear()
     this.dupWarned.clear()
+    this.detailsInFlight.clear()
+    this.detailsDirty.clear()
     this.setState({ ...INITIAL })
   }
 
@@ -469,7 +506,20 @@ class ChatStore extends Store<ChatState> {
       subscribed = getCaller()
         .call('host.session.subscribe', { sessionId })
         .catch(() => {})
-      const page = await getCaller().call('host.session.messages', { sessionId })
+      /*
+       * 两阶段加载（§38）：先拉一份**摘要窗口**（不含工具输出 / 完整入参）立刻渲染，
+       * 用户马上看到对话；重字段随后由 `loadMessageDetails` 在后台补齐。
+       *
+       * 判据是**电脑端**在 hello 里声明了 `MESSAGES_DETAIL_CAPABILITY`：旧电脑端会静默
+       * 忽略 `detail`（当 full）—— 不先确认就会「先拉一次 full（慢）再拉一次 full（更慢）」。
+       * 拿不到该能力 = 退化为一次拉全量（不会错，只是没省到）。
+       */
+      const twoPhase = this.can(MESSAGES_DETAIL_CAPABILITY)
+      const page = await getCaller().call(
+        'host.session.messages',
+        { sessionId, ...(twoPhase ? { detail: 'summary' as const } : {}) },
+        MESSAGE_LOAD_TIMEOUT_MS,
+      )
       const loaded = this.normalizeWindow(sessionId, page.messages)
       this.setState((s) => ({
         ...s,
@@ -480,6 +530,9 @@ class ChatStore extends Store<ChatState> {
       }))
       // 上下文占用快照（之后由 `context.changed` 增量维护）
       void this.loadContext(sessionId)
+      // 第二阶段（后台补细节）：不 await —— 摘要已经能看，不该再让用户多等。
+      // 仅当第一阶段**确实延后了东西**（有 `deferred`）时才发，否则白拉一次整窗。
+      if (twoPhase && loaded.some((m) => m.deferred)) void this.loadMessageDetails(sessionId)
     } catch (err) {
       this.setState((s) => ({ ...s, loadingMessages: false, error: messageOf(err) }))
     }
@@ -620,11 +673,17 @@ class ChatStore extends Store<ChatState> {
     if (!snapshot.hasMoreMessages[sessionId]) return
     const cursor = snapshot.cursor[sessionId]
     this.setState((s) => ({ ...s, loadingOlder: true }))
+    const twoPhase = this.can(MESSAGES_DETAIL_CAPABILITY)
     try {
-      const page = await getCaller().call('host.session.messages', {
-        sessionId,
-        ...(cursor != null ? { fromRowid: cursor } : {}),
-      })
+      const page = await getCaller().call(
+        'host.session.messages',
+        {
+          sessionId,
+          ...(cursor != null ? { fromRowid: cursor } : {}),
+          ...(twoPhase ? { detail: 'summary' as const } : {}),
+        },
+        MESSAGE_LOAD_TIMEOUT_MS,
+      )
       const local = this.getSnapshot().messages[sessionId] ?? []
       const known = new Set(local.map((m) => m.id))
       // ⚠️ 两道去重缺一不可：`known` 挡「与本地重复」（推送通道先到的那份），
@@ -638,9 +697,76 @@ class ChatStore extends Store<ChatState> {
         hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: page.hasMore },
         cursor: { ...s.cursor, [sessionId]: page.cursor ?? null },
       }))
+      // 本页的详细内容同为第二阶段：仅当本页**确实延后了东西**时才补
+      // （`loadMessageDetails` 会重拉**整窗**并按 id 补齐）
+      if (twoPhase && older.some((m) => m.deferred)) void this.loadMessageDetails(sessionId)
     } catch (err) {
       this.setState((s) => ({ ...s, loadingOlder: false, error: messageOf(err) }))
     }
+  }
+
+  /**
+   * 两阶段加载的第二阶段（§38）：后台拉一次完整窗口，按 id 把重字段（工具输出 / 完整入参）
+   * 补回已渲染的摘要窗口。
+   *
+   * 为何整窗重拉而不是逐条：电脑侧 `host.session.messages`（无游标）返回的是**已加载窗口**
+   * 的全部消息，一次就拿全；且它天然幂等（新到的消息由 `message.added` 推过来，这里只覆盖
+   * 同 id 的）。逐条拉会退化成 N 个往返。
+   *
+   * ⚠️ **补细节失败不弹错**：摘要窗口已经能看，重字段缺失只是「展开工具卡时看不到输出」——
+   * 弹一条错误反而吓用户。等下次打开会话 / 重连时会再拉一次。
+   */
+  private async loadMessageDetails(sessionId: string): Promise<void> {
+    if (this.detailsInFlight.has(sessionId)) {
+      // 已有一轮在跑：记一笔，等它结束后**再补一次**（重拉整窗会把新增页一并补齐）
+      this.detailsDirty.add(sessionId)
+      return
+    }
+    this.detailsInFlight.add(sessionId)
+    this.setState((s) => ({ ...s, detailsLoading: { ...s.detailsLoading, [sessionId]: true } }))
+    try {
+      const page = await getCaller().call(
+        'host.session.messages',
+        { sessionId },
+        MESSAGE_LOAD_TIMEOUT_MS,
+      )
+      this.mergeMessageDetails(sessionId, page.messages)
+    } catch {
+      /* 见方法注释：补细节失败静默 */
+    } finally {
+      this.detailsInFlight.delete(sessionId)
+      if (this.detailsDirty.delete(sessionId)) {
+        void this.loadMessageDetails(sessionId)
+      } else {
+        this.setState((s) => ({
+          ...s,
+          detailsLoading: { ...s.detailsLoading, [sessionId]: false },
+        }))
+      }
+    }
+  }
+
+  /**
+   * 把完整窗口的重字段按 id 补回本地摘要窗口。
+   *
+   * 合并策略：**只覆盖本地已存在的同 id 条目**（用电脑侧更全的那份替换），
+   * 不新增 / 不删除 / 不重排 —— 期间经 `message.added` 新到的消息由事件通道负责，
+   * 续页（`loadOlder`）进来的更早消息也不会被这份「尾部窗口」抹掉。
+   * 替换后 `deferred` 自然消失（电脑侧完整投影不带它）。
+   */
+  private mergeMessageDetails(sessionId: string, full: readonly MessageDTO[]): void {
+    const local = this.getSnapshot().messages[sessionId]
+    if (!local) return
+    const byId = new Map(full.map((m) => [m.id, m]))
+    let changed = false
+    const merged = local.map((m) => {
+      const f = byId.get(m.id)
+      if (!f || !needsDetail(m, f)) return m
+      changed = true
+      return f
+    })
+    if (!changed) return
+    this.setState((s) => ({ ...s, messages: { ...s.messages, [sessionId]: merged } }))
   }
 
   // ─────────────────── M4：会话写操作（不依赖电脑端已推送，主动刷新一次列表） ───────────────────
@@ -1087,6 +1213,21 @@ onEndpointReady((endpoint: Endpoint) => {
 function messageOf(err: unknown): string {
   if (err instanceof BridgeError) return err.message
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 本地这条是否**需要**用电脑侧的完整投影替换（两阶段加载的合并判据）。
+ *
+ * 只在「重字段确实有变化」或「还带着 `deferred`」时替换，避免整窗无谓重建
+ * （列表是纯函数派生的，换引用会让整棵子树重渲染）。
+ */
+function needsDetail(local: MessageDTO, full: MessageDTO): boolean {
+  if (local.deferred || full.deferred) return true
+  return (
+    local.text !== full.text ||
+    local.toolArgsFull !== full.toolArgsFull ||
+    (local.detail ?? null) !== (full.detail ?? null)
+  )
 }
 
 /** 「新对话」的默认选择：最近一个会话的 Agent / 模型 / 工作目录（拿不到就留空，由电脑侧默认值决定）。 */

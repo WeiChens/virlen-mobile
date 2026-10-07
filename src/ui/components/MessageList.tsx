@@ -105,7 +105,7 @@ import { sizeLabel } from '../../lib/files'
 import FileIcon from './FileIcon'
 import InteractionCard from '../../components/InteractionCard'
 import Markdown from '../../components/Markdown'
-import { IconChevronDown, IconTerminal } from './icons'
+import { IconChevronDown, IconStatusFail, IconStatusOk, IconTerminal } from './icons'
 import { useLongPress } from './use-long-press'
 import {
   maxScrollTop,
@@ -172,7 +172,23 @@ const MessageRow = memo(function MessageRow({
             aria-expanded={open}
             title={open ? '收起工具输出' : '展开工具输出'}
           >
-            <IconTerminal className="tool-card__icon" width={16} height={16} />
+            {/*
+              成功/失败标志（电脑侧 `MessageDTO.isError` 下发，手机端不靠正文反推）：
+              **取代**原来的终端图标占在最左侧 —— 「这一步成了还是砸了」比「这是一次工具执行」
+              （卡片形态本身已经说明）更值得占用那个位置。字段缺席 = 没有失败标记 = ✓。
+            */}
+            <span
+              className={`tool-card__status tool-card__status--${view.status}`}
+              role="img"
+              aria-label={view.status === 'error' ? '工具调用失败' : '工具调用成功'}
+              title={view.status === 'error' ? '执行失败' : '执行成功'}
+            >
+              {view.status === 'error' ? (
+                <IconStatusFail width={16} height={16} />
+              ) : (
+                <IconStatusOk width={16} height={16} />
+              )}
+            </span>
             {/* 工具名与入参都由电脑侧解析（`buildToolCallIndex` + `summarizeToolArgs`），手机端不猜 */}
             {view.name ? (
               <code className="tool-card__name">{view.name}</code>
@@ -213,7 +229,13 @@ const MessageRow = memo(function MessageRow({
                   <pre className="tool-card__args-body">{view.argsFull}</pre>
                 </div>
               )}
-              {hasBody(message) ? (
+              {view.deferred ? (
+                /*
+                 * 两阶段加载第一阶段：详细内容（工具输出 / 完整入参）还没到（§38）。
+                 * 这里**不能**说「没有输出」——那是假话（内容马上会补上），只说「正在加载」。
+                 */
+                <p className="tool-card__deferred">正在加载详细内容…</p>
+              ) : hasBody(message) ? (
                 <pre className="tool-card__body">{message.text}</pre>
               ) : view.omitted ? (
                 /*

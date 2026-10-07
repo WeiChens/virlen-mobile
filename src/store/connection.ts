@@ -25,6 +25,7 @@ import {
   MESSAGE_DETAIL_CAPABILITY,
   MESSAGE_FILE_CAPABILITY,
   MESSAGE_QUOTE_CAPABILITY,
+  MESSAGES_DETAIL_CAPABILITY,
   type HelloResult,
   type HostApi,
   type Transport,
@@ -207,6 +208,14 @@ const CLIENT_CAPABILITIES = [
    * 不声明的旧客户端会继续收全量 —— 因为它会把省略显示成「这次调用没有输出」（假话）。
    */
   MESSAGE_DETAIL_CAPABILITY,
+  /**
+   * §38：本端会用 `MsgPageParams.detail:'summary'` 拉「摘要窗口」先渲染、再后台补细节，
+   * 并渲染 `MessageDTO.deferred`（「正在加载详细内容…」）。
+   *
+   * 声明了它，电脑端才会在窗口拉取时省掉重字段（工具输出 / 完整入参）；
+   * 不声明的旧客户端继续收全量 —— 否则它会停在「有 deferred 但不会补」的半截状态。
+   */
+  MESSAGES_DETAIL_CAPABILITY,
   /**
    * §36：本端支持消息级操作 —— 发引用（`SendParams.quotes`）、渲染引用条、删单条消息。
    *

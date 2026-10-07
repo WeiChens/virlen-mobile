@@ -72,6 +72,32 @@ export function IconCheck(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+/**
+ * 工具调用**成功**（圆内对勾）—— 工具卡片 / 工具组头部的状态标志。
+ *
+ * 为什么画成对角对称的「圆 + 符号」一对（而非单用对勾 / 叉）：同一个头部位置要在
+ * 两种状态下都能一眼分辨，外形一致、只换内部符号，比「有图标 / 没图标」更稳定。
+ * 颜色由外层 `.tool-card__status--ok` 等类给（图标本身只认 `currentColor`）。
+ */
+export function IconStatusOk(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 12.4l2.6 2.6L15.8 9.6" />
+    </Svg>
+  )
+}
+
+/** 工具调用**失败**（圆内叉）—— 与 `IconStatusOk` 成对。 */
+export function IconStatusFail(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9 9l6 6M15 9l-6 6" />
+    </Svg>
+  )
+}
+
 /** 工作目录。 */
 export function IconFolder(props: SVGProps<SVGSVGElement>) {
   return (

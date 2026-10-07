@@ -400,4 +400,67 @@ describe('工具调用卡片', () => {
     // 输出那一块照常在（少的只是入参）
     expect(opened.querySelector('.tool-card__body')?.textContent).toBe('ok')
   })
+
+  /**
+   * 成功 / 失败标志：判据**只有**电脑侧的 `isError` 一个（与桌面 `result.isError` 同源）。
+   *
+   * 为什么要挂真实组件：「正文像报错但没标记」与「真失败」在正文上看不出区别，只有渲染到 DOM
+   * 里才能确认手机端**没有**自作主张靠关键字判成败。
+   */
+  it('成功 / 失败标志：靠电脑侧的 isError，不靠正文反推', async () => {
+    await connect()
+    await chatStore.openSession('demo-1')
+    await waitFor(() => (chatStore.getSnapshot().messages['demo-1'] ?? []).length === 4)
+
+    act(() => {
+      // 演示会话那条 `list_files` 没有失败标记 → ✓
+      breakToolRun('before-ok')
+      // 正文看着像报错，但没有 isError → 仍然算成功（判据只有 isError 一个）
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-fake-error',
+          role: 'tool',
+          text: 'Error: 这一段只是普通输出',
+          createdAt: Date.now(),
+          toolName: 'noop',
+        },
+      })
+      breakToolRun('before-fail')
+      chatStore.applyEvent('host.event.message.added', {
+        sessionId: 'demo-1',
+        message: {
+          id: 'tool-fail',
+          role: 'tool',
+          text: '命令退出码 1',
+          createdAt: Date.now(),
+          toolName: 'run_command',
+          isError: true,
+        },
+      })
+    })
+
+    mount()
+    await act(async () => {
+      await flush(20)
+    })
+
+    // 成功：字段缺席就按 ✓ 渲染（旧电脑端也一并如此）
+    expect(cardOf('list_files').querySelector('.tool-card__status--ok')).not.toBeNull()
+    expect(cardOf('list_files').querySelector('.tool-card__status--error')).toBeNull()
+    // 标志**取代**了原来的终端图标：卡片头部不再有类别图标
+    expect(cardOf('list_files').querySelector('.tool-card__icon')).toBeNull()
+    // 它占的是最左侧那个位（原来图标的位置）
+    expect(
+      head(cardOf('run_command')).firstElementChild?.classList.contains('tool-card__status'),
+    ).toBe(true)
+    // 正文像报错也不算失败
+    expect(cardOf('noop').querySelector('.tool-card__status--ok')).not.toBeNull()
+    // 失败：带 isError → ✗
+    expect(cardOf('run_command').querySelector('.tool-card__status--error')).not.toBeNull()
+    // 无障碍：状态是一句给读屏的话，不只是颜色
+    expect(
+      cardOf('run_command').querySelector('.tool-card__status')?.getAttribute('aria-label'),
+    ).toBe('工具调用失败')
+  })
 })
