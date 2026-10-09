@@ -23,12 +23,14 @@ import {
   type MessageFileRef,
   type MessageQuote,
   type ModelProviderDTO,
+  type MsgPageDTO,
   type RunningToolDTO,
   type SessionSummaryDTO,
   type WorkspaceOptionDTO,
 } from 'virlen-remote'
 import { Store } from '../lib/store'
 import { dedupeMessages, insertionIndexFor } from '../lib/messages'
+import { visibleRowCount } from '../lib/message-rows'
 import { getCaller, onEndpointReady } from '../api/active'
 
 export interface StreamingState {
@@ -195,6 +197,25 @@ const ANSWER_NOTICE: Record<string, string> = {
  * 但第二次（full）仍可能很重，故两阶段都用这个值。
  */
 const MESSAGE_LOAD_TIMEOUT_MS = 60_000
+
+/**
+ * 一次「按可见行补足」的**可见行下限**（与桌面 `MESSAGE_MIN_VISIBLE` 同一口径，见 `virlen-app`
+ * 的 `session_db/visible.rs`）。
+ *
+ * 判据是**会渲染成行的行数**，不是原始条数：连续的工具调用在本端合成一行「N 次工具调用」、
+ * 纯工具调用轮的空正文 assistant 根本不占行（见 `lib/message-rows.ts`），于是「50 条原始消息」
+ * 在工具密集的窗口里可能只渲染一两行。
+ *
+ * 取 50：正文密集的会话一页就达标（仍是**一次**请求，不多花流量）；只有「屏幕上确实没多出
+ * 东西」的窗口才会多取几页。
+ */
+export const MESSAGE_MIN_ROWS = 50
+
+/**
+ * 一次取数（**含调用方已经拿到的那一页**）最多取满几页 —— 兜底：整段历史全是工具调用时，
+ * 可见行数永远涨不上去，不能无限取。与桌面 `MESSAGE_FILL_MAX_CHUNKS`（同样含首块）同值。
+ */
+export const MESSAGE_FILL_MAX_PAGES = 5
 
 class ChatStore extends Store<ChatState> {
   /**
@@ -515,11 +536,16 @@ class ChatStore extends Store<ChatState> {
        * 拿不到该能力 = 退化为一次拉全量（不会错，只是没省到）。
        */
       const twoPhase = this.can(MESSAGES_DETAIL_CAPABILITY)
-      const page = await getCaller().call(
+      const first = await getCaller().call(
         'host.session.messages',
         { sessionId, ...(twoPhase ? { detail: 'summary' as const } : {}) },
         MESSAGE_LOAD_TIMEOUT_MS,
       )
+      /*
+       * 首屏**同样按可见行补足**（与桌面 `ensureMessagesLoaded` 同口径）：尾部窗口若大半是工具
+       * 调用，打开会话只看得到一两行 —— 用户第一眼就会以为「这个会话是空的 / 什么都没干」。
+       */
+      const page = await this.fillVisibleRows(sessionId, first, twoPhase)
       const loaded = this.normalizeWindow(sessionId, page.messages)
       this.setState((s) => ({
         ...s,
@@ -661,10 +687,63 @@ class ChatStore extends Store<ChatState> {
   }
 
   /**
+   * 取更早的若干页，直到这一批的**可见行数**达标（与桌面 Rust `get_message_page_filled` 同一口径）。
+   *
+   * 为什么不能只按条数取：本端的列表单位是**行**（`lib/message-rows.ts`）—— 连续的工具调用合成
+   * 一行「N 次工具调用」、纯工具调用轮的空正文 assistant 根本不占行。一页 50 条若大半是工具调用，
+   * 屏幕上可能只多一两行：用户滚到顶部（或点「加载更早的消息」）却几乎看不到新内容，只能反复
+   * 上滑 / 反复点。这里就**继续向更早取**，直到这一批的可见行数 ≥ [`MESSAGE_MIN_ROWS`]、或到底、
+   * 或触 [`MESSAGE_FILL_MAX_PAGES`] 上限 —— 一次用户动作给足，而不是把同一件事重复 N 次交给用户。
+   *
+   * 与电脑侧的分工：新电脑侧**单次应答内部**已按同一口径补足（一次 IPC 就给够），所以常见情况
+   * 这里只发一次请求（第一页就达标，一行代码都没多跑）；旧电脑端（或工具特别密的窗口）由本机
+   * 兜底 —— PWA 总是最新的，而电脑端可能还是旧版本。
+   *
+   * @param first 已经拿到的那一段（首屏窗口 / 更早的一页）；它的 `cursor` 就是本批的起点
+   * @returns 补足后的窗口（升序）；调用方**只提交一次**（见 `loadOlder`）
+   */
+  private async fillVisibleRows(
+    sessionId: string,
+    first: MsgPageDTO,
+    summary: boolean,
+  ): Promise<MsgPageDTO> {
+    let messages = first.messages
+    let hasMore = first.hasMore
+    let cursor = first.cursor ?? null
+    for (let page = 1; page < MESSAGE_FILL_MAX_PAGES; page += 1) {
+      // 达标 / 没有更早的 / 游标不可用：到此为止
+      if (visibleRowCount(messages) >= MESSAGE_MIN_ROWS) break
+      if (!hasMore || cursor == null) break
+      const older = await getCaller().call(
+        'host.session.messages',
+        {
+          sessionId,
+          fromRowid: cursor,
+          ...(summary ? { detail: 'summary' as const } : {}),
+        },
+        MESSAGE_LOAD_TIMEOUT_MS,
+      )
+      // 空页 = 游标失效 / 数据被删：当作到底（否则会反复请求同一个空游标）
+      if (older.messages.length === 0) {
+        hasMore = false
+        break
+      }
+      messages = [...older.messages, ...messages]
+      hasMore = older.hasMore
+      cursor = older.cursor ?? null
+    }
+    return { messages, hasMore, cursor }
+  }
+
+  /**
    * 加载更早的消息（M5 分页）—— 上拉／滚顶触发。
    *
    * 合并按 id 去重：电脑侧游标带失效保护，且分页本身是幂等的，
    * 重复页不会造成重复气泡（消息 id 是权威标识）。
+   *
+   * ⚠️ 一次点按取的不只是「一页」：这一页若大半是工具调用（屏幕上只多一两行），会**继续向更早取**，
+   * 直到这一批的可见行数达标 / 到底 / 触上限 —— 详见 `fillVisibleRows`。取够之前**不提交**：
+   * 续页锚点（`MessageList` 按「行数是否长过加载前」判归位）只认一次数据变更（见那里的 `pendingOlderRef`）。
    */
   async loadOlder(): Promise<void> {
     const snapshot = this.getSnapshot()
@@ -675,7 +754,7 @@ class ChatStore extends Store<ChatState> {
     this.setState((s) => ({ ...s, loadingOlder: true }))
     const twoPhase = this.can(MESSAGES_DETAIL_CAPABILITY)
     try {
-      const page = await getCaller().call(
+      const first = await getCaller().call(
         'host.session.messages',
         {
           sessionId,
@@ -684,6 +763,8 @@ class ChatStore extends Store<ChatState> {
         },
         MESSAGE_LOAD_TIMEOUT_MS,
       )
+      // 按「可见行」补足（与桌面同一口径）：一页不够看就继续向更早取，别让用户反复点
+      const page = await this.fillVisibleRows(sessionId, first, twoPhase)
       const local = this.getSnapshot().messages[sessionId] ?? []
       const known = new Set(local.map((m) => m.id))
       // ⚠️ 两道去重缺一不可：`known` 挡「与本地重复」（推送通道先到的那份），

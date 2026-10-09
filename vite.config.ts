@@ -36,7 +36,7 @@ export default defineConfig({
   server: {
     // host: true —— 允许手机通过局域网 IP 访问 dev server 进行真机调试
     host: true,
-    port: 5173,
+    port: 5179,
     strictPort: false,
     // 有证书则启用 HTTPS（手机扫码需安全上下文）；无证书时保持 HTTP
     ...(httpsConfig() ? { https: httpsConfig() } : {}),

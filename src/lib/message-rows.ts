@@ -20,6 +20,10 @@
  *
  * 行模型是**纯函数**：可单测（`message-rows.test.ts`），组件只负责摆 HTML。
  *
+ * 除了「切行」，本文件还提供 `visibleRowCount`（**行数**，不建行对象）：手机端的**分页补足**
+ * 按它判「这一页到底有没有让屏幕上多出东西」（见 `store/chat.ts` 的 `MESSAGE_MIN_ROWS`）。
+ * 两者共用 `rowRoleOf`，所以折叠规则改了不会只改到一半。
+ *
  * ⚠️ 前插锚定**不在本文件记账**：列表用**倒置架构**（数据倒序 + `scaleY(-1)`）从坐标系层面
  * 规避前插问题（见 `MessageList.tsx` 文件头）。本文件只负责「行的切法」。
  */
@@ -68,6 +72,25 @@ export function rendersNothing(
 }
 
 /**
+ * 一条消息在行模型里怎么落。
+ *
+ * ⚠️ `buildRows`（切行）与 `visibleRowCount`（数行）**共用**这一个判据：两份各写一遍迟早会漂移，
+ * 而漂移的症状是「分页觉得够多了，屏幕上却还是没东西」——静默且难查（只有工具密集的会话才犯）。
+ */
+export type RowRole =
+  /** 工具消息：并入当前工具段（它在屏幕上就是这一段的成员）。 */
+  | 'tool'
+  /** 什么都渲染不出来：不占行，也**不打断**工具段（屏幕上它不存在）。 */
+  | 'none'
+  /** 自己占一行。 */
+  | 'single'
+
+export function rowRoleOf(message: MessageDTO): RowRole {
+  if (message.role === 'tool') return 'tool'
+  return rendersNothing(message) ? 'none' : 'single'
+}
+
+/**
  * 切行：连续的工具调用合成一组，渲染不出东西的消息直接不占行。
  *
  * 顺序保持原样（列表的顺序是权威，本函数只做「合并 / 丢弃」两种减法）。
@@ -83,17 +106,49 @@ export function buildRows(messages: readonly MessageDTO[]): ListRow[] {
   }
 
   for (const message of messages) {
-    if (message.role === 'tool') {
+    const role = rowRoleOf(message)
+    if (role === 'tool') {
       run.push(message)
       continue
     }
     // 空正文：既不打断工具段（屏幕上它不存在），也不单独成行
-    if (rendersNothing(message)) continue
+    if (role === 'none') continue
     flush()
     rows.push({ kind: 'one', key: message.id, message })
   }
   flush()
   return rows
+}
+
+/**
+ * 一段消息在列表里会占**几行** —— `buildRows(...).length` 的**免建行**版本（同一套切法）。
+ *
+ * 用途：**分页补足**。手机端一次取数的判据不能是原始条数 —— 一页 50 条若大半是工具调用
+ * （连续工具调用合成一组、纯工具调用轮的空正文消息根本不占行），屏幕上可能只多一两行：
+ * 用户滚到顶部（或点「加载更早的消息」）几乎看不到新内容，只能反复上滑 / 反复点。
+ * 判据收在这里，让 `store/chat.ts` 能问出「这一页到底让屏幕上多出几行」。
+ *
+ * ⚠️ 与桌面 Rust 的 `visible_row_count`（`virlen-app` 的 `session_db/visible.rs`）是
+ * **同一件事的两种表述**：那边数「工具宿主（带 tool_calls 的 assistant）+ 折叠」，这边数
+ * 「工具消息（`role:'tool'` 的结果气泡）合成一段」—— 手机端的工具卡本来就长在结果消息上。
+ * 差异只在于「一段工具调用的长度」，不影响这里要回答的问题（这一批够不够多）。
+ */
+export function visibleRowCount(messages: readonly MessageDTO[]): number {
+  let rows = 0
+  /** 当前工具段攒了几条（> 0 = 段还没收口；空正文消息不打断它）。 */
+  let run = 0
+  for (const message of messages) {
+    const role = rowRoleOf(message)
+    if (role === 'tool') {
+      run += 1
+      continue
+    }
+    if (role === 'none') continue
+    if (run > 0) rows += 1
+    run = 0
+    rows += 1
+  }
+  return run > 0 ? rows + 1 : rows
 }
 
 /**

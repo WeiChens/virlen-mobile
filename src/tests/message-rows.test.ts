@@ -20,6 +20,7 @@ import {
   rendersNothing,
   tailSignature,
   toolGroupView,
+  visibleRowCount,
 } from '../lib/message-rows'
 
 /** 造一条消息（只给用例关心的字段）。 */
@@ -116,6 +117,54 @@ describe('buildRows：连续工具调用合成一行', () => {
       'one:u1',
       'one:a1',
       'one:t1',
+    ])
+  })
+})
+
+describe('visibleRowCount：数行而不建行（分页补足按它判「这一页让屏幕多出几行」）', () => {
+  /**
+   * 本函数的全部契约就是「与 `buildRows` 逐例一致」（两者共用 `rowRoleOf`）：
+   * 一旦漂移，症状是「分页觉得够多了，屏幕上却还是没东西」——静默，且只有工具密集的会话才犯。
+   */
+  const sameAsBuildRows = (messages: readonly MessageDTO[]) =>
+    expect(visibleRowCount(messages)).toBe(buildRows(messages).length)
+
+  it('空列表 / 全是渲染不出来的消息 → 0 行', () => {
+    expect(visibleRowCount([])).toBe(0)
+    expect(visibleRowCount([msg('gap', 'assistant', { text: '' })])).toBe(0)
+  })
+
+  it('一段连续工具调用（含中间空正文的 assistant）= 1 行；看得见的消息是边界', () => {
+    expect(
+      visibleRowCount([tool('t1', 'a'), msg('gap', 'assistant', { text: '' }), tool('t2', 'b')]),
+    ).toBe(1)
+    expect(visibleRowCount([msg('u1', 'user'), tool('t1', 'a'), msg('a1', 'assistant')])).toBe(3)
+  })
+
+  it('**一页工具结果只算一两行** —— 这正是「滚到顶部却看不到新内容」的由来', () => {
+    // 50 条：每 5 条里 4 条工具结果 + 1 条空正文 assistant（引擎每轮的常态）→ 整页只有 1 行
+    const page: MessageDTO[] = Array.from({ length: 50 }, (_, i) =>
+      i % 5 === 0 ? tool(`t${i}`, '输出') : msg(`gap${i}`, 'assistant', { text: '' }),
+    )
+    expect(visibleRowCount(page)).toBe(1)
+  })
+
+  it('与 `buildRows(...).length` 逐例一致（切法与数法同源）', () => {
+    sameAsBuildRows([])
+    sameAsBuildRows([msg('u1', 'user')])
+    sameAsBuildRows([tool('t1', 'a')])
+    sameAsBuildRows([tool('t1', 'a'), tool('t2', 'b')])
+    sameAsBuildRows([
+      tool('t1', 'a'),
+      msg('gap', 'assistant', { text: '' }),
+      msg('u1', 'user'),
+      tool('t2', 'b'),
+      tool('t3', 'c'),
+    ])
+    sameAsBuildRows([
+      msg('s1', 'system', { text: '' }),
+      msg('u1', 'user', { text: '   ' }),
+      tool('t1', ''),
     ])
   })
 })
